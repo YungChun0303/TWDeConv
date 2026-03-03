@@ -1,0 +1,35 @@
+# R build artefacts
+*.Rproj.user
+*.Rhistory
+*.RData
+*.Ruserdata
+.Rproj.user/
+
+# R CMD check output
+/*.Rcheck/
+/*.tar.gz
+
+# devtools / pkgdown
+docs/
+inst/doc/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Google Drive / cloud sync
+*.gdoc
+*.gsheet
+Icon?
+
+# Claude Code & MCP settings
+.mcp.json
+.claude/
+
+# Package-specific scratch files
+setup_package.R
+
+# Temp / cache
+*.tmp
+*.bak

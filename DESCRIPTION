@@ -1,0 +1,43 @@
+Package: deconvCore
+Title: Spatio-Temporal Deconvolution of Moving-Average Estimates
+Version: 0.1.0
+Authors@R:
+    person("Yungchun", "Li", role = c("aut", "cre"),
+           email = "yungchun@wustl.edu",
+           comment = c(ORCID = ""))
+Description: Provides tools to deconvolve multi-year moving-average spatial
+    estimates (e.g., ACS 5-year data) into latent annual signals using a
+    Kronecker-structured spatio-temporal generalised lasso solved via the
+    Alternating Direction Method of Multipliers (ADMM). Includes a synthetic
+    data generator for simulation studies, penalty matrix builders (temporal
+    difference, spatial graph Laplacian, precision weights), an efficient ADMM
+    solver with one-time Cholesky factorisation for lambda grid searches, a
+    simulation suite with RMSE/CCC evaluation, and a complete ACS 5-year data
+    ingestion pipeline with Variance Replicate Estimate (VRE) support.
+License: MIT + file LICENSE
+URL: https://github.com/YungChun0303/deconvCore
+BugReports: https://github.com/YungChun0303/deconvCore/issues
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.3
+Imports:
+    R6 (>= 2.5.1),
+    sf (>= 1.0-0),
+    MASS (>= 7.3-0),
+    Matrix (>= 1.5-0),
+    spdep (>= 1.2-0),
+    tidycensus (>= 1.0-0),
+    httr (>= 1.4-0),
+    rlang (>= 1.0.0),
+    stats
+Suggests:
+    testthat (>= 3.0.0),
+    ggplot2 (>= 3.4.0),
+    patchwork (>= 1.1.0),
+    viridis,
+    knitr,
+    rmarkdown,
+    survey (>= 4.1-0),
+    srvyr (>= 1.2-0)
+Config/testthat/edition: 3
+VignetteBuilder: knitr

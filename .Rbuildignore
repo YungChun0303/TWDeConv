@@ -1,0 +1,14 @@
+^.*\.Rproj$
+^\.Rproj\.user$
+^\.Rhistory$
+^\.RData$
+^\.DS_Store$
+^\.gitignore$
+^\.mcp\.json$
+^\.claude$
+^setup_package\.R$
+^LICENSE\.md$
+^README\.Rmd$
+^docs$
+^_pkgdown\.yml$
+^\.github$
