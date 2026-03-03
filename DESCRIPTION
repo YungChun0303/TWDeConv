@@ -1,4 +1,4 @@
-Package: deconvCore
+Package: TWDeConv
 Title: Spatio-Temporal Deconvolution of Moving-Average Estimates
 Version: 0.1.0
 Authors@R:
@@ -15,8 +15,8 @@ Description: Provides tools to deconvolve multi-year moving-average spatial
     simulation suite with RMSE/CCC evaluation, and a complete ACS 5-year data
     ingestion pipeline with Variance Replicate Estimate (VRE) support.
 License: MIT + file LICENSE
-URL: https://github.com/YungChun0303/deconvCore
-BugReports: https://github.com/YungChun0303/deconvCore/issues
+URL: https://github.com/YungChun0303/TWDeConv
+BugReports: https://github.com/YungChun0303/TWDeConv/issues
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
 RoxygenNote: 7.3.3

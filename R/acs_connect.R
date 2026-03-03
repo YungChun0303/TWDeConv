@@ -615,7 +615,7 @@ print.ACSData <- function(x, ...) {
               !all(sf::st_is_empty(sf::st_geometry(x$sf)))
   has_rep  <- !all(vapply(x$replicates, is.null, logical(1L)))
 
-  cat("\u2500\u2500 ACSData (deconvCore) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n")
+  cat("\u2500\u2500 ACSData (TWDeConv) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n")
   cat(sprintf("  Geography : Census tracts  |  %s county/ies, %s\n",
               if (is.null(m$county)) "all" else m$county, m$state))
   cat(sprintf("  Period    : ACS 5-year %s  (end year %d)\n",
@@ -863,7 +863,7 @@ prep_acs_for_deconv <- function(state,
 #' @export
 print.DeconvInput <- function(x, ...) {
   m <- x$metadata
-  cat("\u2500\u2500 DeconvInput (deconvCore) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n")
+  cat("\u2500\u2500 DeconvInput (TWDeConv) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n")
   cat(sprintf("  Geography : Census tracts  |  %s%s\n",
               if (is.null(m$county)) "all counties, "
               else paste0(m$county, " county, "),

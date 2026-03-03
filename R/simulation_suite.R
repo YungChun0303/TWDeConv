@@ -304,7 +304,7 @@ run_simulation_suite <- function(gen,
 #' @export
 print.SimulationSuite <- function(x, ...) {
   r <- x$results
-  cat("\u2500\u2500 SimulationSuite (deconvCore) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n")
+  cat("\u2500\u2500 SimulationSuite (TWDeConv) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n")
   cat(sprintf("  Grid     : %d \u03bb_t \u00d7 %d \u03bb_s = %d combinations\n",
               length(unique(r$lambda_t)), length(unique(r$lambda_s)), nrow(r)))
   cat(sprintf("  Problem  : %d cells \u00d7 %d years\n",

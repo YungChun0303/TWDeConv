@@ -1,6 +1,6 @@
 # This file is the entry point for R CMD check to find and run the testthat
 # test suite. Do not edit by hand.
 library(testthat)
-library(deconvCore)
+library(TWDeConv)
 
-test_check("deconvCore")
+test_check("TWDeConv")

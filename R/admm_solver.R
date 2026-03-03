@@ -454,7 +454,7 @@ ADMMSolver <- R6::R6Class(
     #' @param ... Unused; accepted for compatibility with the generic
     #'   `print()` method.
     print = function(...) {
-      cat("\u2500\u2500 ADMMSolver (deconvCore) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n")
+      cat("\u2500\u2500 ADMMSolver (TWDeConv) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n")
       cat(sprintf("  Problem  : %d cells \u00d7 %d latent years"
                   , self$n_cells, self$T_years))
       cat(sprintf(" | %d observed periods\n", self$n_periods))

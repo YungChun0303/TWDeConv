@@ -1,11 +1,11 @@
-# deconvCore
+# TWDeConv
 
 <!-- badges: start -->
-[![R-CMD-check](https://github.com/YungChun0303/deconvCore/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/YungChun0303/deconvCore/actions/workflows/R-CMD-check.yaml)
+[![R-CMD-check](https://github.com/YungChun0303/TWDeConv/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/YungChun0303/TWDeConv/actions/workflows/R-CMD-check.yaml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 <!-- badges: end -->
 
-**deconvCore** is an R package for spatio-temporal deconvolution of multi-year
+**TWDeConv** is an R package for spatio-temporal deconvolution of multi-year
 moving-average estimates. Its primary application is recovering latent *annual*
 signals from published **ACS 5-year** estimates (which are 5-year moving
 averages over Census tracts), but the engine is general and works for any
@@ -19,7 +19,7 @@ The ACS 5-year estimate for tract *i* and window ending in year *s* is
 
 $$Y_{is} = \frac{1}{5}\sum_{t=s-4}^{s} X_{it} + \varepsilon_{is}$$
 
-where **X** is the unobserved latent annual signal. **deconvCore** recovers
+where **X** is the unobserved latent annual signal. **TWDeConv** recovers
 **X** by solving a Kronecker-structured spatio-temporal generalised lasso via
 ADMM:
 
@@ -34,7 +34,7 @@ $$\min_X \;\tfrac{1}{2}\|W^{1/2}(\operatorname{vec}(Y) - (I_n \otimes M)\operato
 
 ```r
 # Install from GitHub (requires remotes)
-remotes::install_github("YungChun0303/deconvCore")
+remotes::install_github("YungChun0303/TWDeConv")
 ```
 
 The package requires R ≥ 4.1. A Census API key is needed for ACS data
@@ -44,7 +44,7 @@ and install with `tidycensus::census_api_key("YOUR_KEY", install = TRUE)`.
 ## Quick start — synthetic benchmark
 
 ```r
-library(deconvCore)
+library(TWDeConv)
 
 # 1. Generate synthetic data on a 10×10 grid, T = 20 years
 gen <- SyntheticDataGenerator$new(
@@ -82,7 +82,7 @@ plot_lambda_heatmap(suite)
 ## Quick start — ACS 5-year data (Cook County, IL)
 
 ```r
-library(deconvCore)
+library(TWDeConv)
 
 # Fetch + prepare matrices for two consecutive ACS windows (2021, 2022)
 inp <- prep_acs_for_deconv(
@@ -116,12 +116,12 @@ dim(X_hat)   # n_tracts × T_years
 
 ## Citation
 
-If you use **deconvCore** in published research, please cite:
+If you use **TWDeConv** in published research, please cite:
 
 ```
-Li, Y. (2025). deconvCore: Spatio-temporal deconvolution of moving-average
+Li, Y. (2025). TWDeConv: Spatio-temporal deconvolution of moving-average
 estimates. R package version 0.1.0.
-https://github.com/YungChun0303/deconvCore
+https://github.com/YungChun0303/TWDeConv
 ```
 
 ## License

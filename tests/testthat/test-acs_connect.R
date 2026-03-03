@@ -442,11 +442,11 @@ test_that("summary.ACSData output has Estimates section", {
       mock_data[[counter]]
     }
 
-    env <- getNamespace("deconvCore")
+    env <- getNamespace("TWDeConv")
     old_fn <- env$fetch_acs_vre_data
-    on.exit(assignInNamespace("fetch_acs_vre_data", old_fn, ns = "deconvCore"),
+    on.exit(assignInNamespace("fetch_acs_vre_data", old_fn, ns = "TWDeConv"),
             add = TRUE)
-    assignInNamespace("fetch_acs_vre_data", local_fetch, ns = "deconvCore")
+    assignInNamespace("fetch_acs_vre_data", local_fetch, ns = "TWDeConv")
 
     cache <<- prep_acs_for_deconv(
       state     = "IL",
@@ -461,54 +461,54 @@ test_that("summary.ACSData output has Estimates section", {
 })
 
 test_that("prep_acs_for_deconv returns a DeconvInput object (mock)", {
-  skip_if_not_installed("deconvCore")
+  skip_if_not_installed("TWDeConv")
   inp <- .prep_fixture_mock()
   expect_s3_class(inp, "DeconvInput")
 })
 
 test_that("DeconvInput has required top-level names (mock)", {
-  skip_if_not_installed("deconvCore")
+  skip_if_not_installed("TWDeConv")
   inp <- .prep_fixture_mock()
   expect_true(all(c("Y", "M", "W", "D", "Ls", "metadata") %in% names(inp)))
 })
 
 test_that("Y dimensions are n x S (mock)", {
-  skip_if_not_installed("deconvCore")
+  skip_if_not_installed("TWDeConv")
   inp <- .prep_fixture_mock()
   m   <- inp$metadata
   expect_equal(dim(inp$Y), c(m$n_tracts, m$S_windows))
 })
 
 test_that("M dimensions are S x T (mock)", {
-  skip_if_not_installed("deconvCore")
+  skip_if_not_installed("TWDeConv")
   inp <- .prep_fixture_mock()
   m   <- inp$metadata
   expect_equal(dim(inp$M), c(m$S_windows, m$T_years))
 })
 
 test_that("M row sums equal 1 (mock)", {
-  skip_if_not_installed("deconvCore")
+  skip_if_not_installed("TWDeConv")
   inp <- .prep_fixture_mock()
   expect_equal(as.numeric(Matrix::rowSums(inp$M)),
                rep(1, nrow(inp$M)), tolerance = 1e-12)
 })
 
 test_that("W is square diagonal of size n*S (mock)", {
-  skip_if_not_installed("deconvCore")
+  skip_if_not_installed("TWDeConv")
   inp <- .prep_fixture_mock()
   nS  <- inp$metadata$n_tracts * inp$metadata$S_windows
   expect_equal(dim(inp$W), c(nS, nS))
 })
 
 test_that("D dimensions are (T-k) x T (mock)", {
-  skip_if_not_installed("deconvCore")
+  skip_if_not_installed("TWDeConv")
   inp <- .prep_fixture_mock()
   m   <- inp$metadata
   expect_equal(dim(inp$D), c(m$T_years - m$k, m$T_years))
 })
 
 test_that("Ls is n x n symmetric (mock)", {
-  skip_if_not_installed("deconvCore")
+  skip_if_not_installed("TWDeConv")
   inp <- .prep_fixture_mock()
   n   <- inp$metadata$n_tracts
   expect_equal(dim(inp$Ls), c(n, n))
@@ -516,7 +516,7 @@ test_that("Ls is n x n symmetric (mock)", {
 })
 
 test_that("metadata contains all required fields (mock)", {
-  skip_if_not_installed("deconvCore")
+  skip_if_not_installed("TWDeConv")
   inp <- .prep_fixture_mock()
   m   <- inp$metadata
   required <- c("state", "county", "year_ends", "variables", "var_name",
@@ -526,20 +526,20 @@ test_that("metadata contains all required fields (mock)", {
 })
 
 test_that("T_years = S_windows + 4 for consecutive year_ends (mock)", {
-  skip_if_not_installed("deconvCore")
+  skip_if_not_installed("TWDeConv")
   inp <- .prep_fixture_mock()
   m   <- inp$metadata
   expect_equal(m$T_years, m$S_windows + 4L)
 })
 
 test_that("print.DeconvInput runs without error (mock)", {
-  skip_if_not_installed("deconvCore")
+  skip_if_not_installed("TWDeConv")
   inp <- .prep_fixture_mock()
   expect_no_error(capture.output(print(inp)))
 })
 
 test_that("print.DeconvInput output contains key info (mock)", {
-  skip_if_not_installed("deconvCore")
+  skip_if_not_installed("TWDeConv")
   inp <- .prep_fixture_mock()
   out <- paste(capture.output(print(inp)), collapse = "\n")
   expect_true(grepl("DeconvInput", out))

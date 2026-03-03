@@ -1,6 +1,6 @@
 ## ============================================================
 ## R/synthetic_data.R
-## Synthetic spatio-temporal data generator for deconvCore
+## Synthetic spatio-temporal data generator for TWDeConv
 ## ============================================================
 
 # ---- helpers (not exported) ------------------------------------
@@ -380,7 +380,7 @@ SyntheticDataGenerator <- R6::R6Class(
       p    <- self$params
       fmt  <- function(mat) if (!is.null(mat))
                 paste(dim(mat), collapse = " \u00d7 ") else "\u2014"
-      cat("\u2500\u2500 SyntheticDataGenerator (deconvCore) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n")
+      cat("\u2500\u2500 SyntheticDataGenerator (TWDeConv) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n")
       cat(sprintf("  Grid     : %d \u00d7 %d = %d cells\n",
                   p$n_row, p$n_col, p$n_cells))
       cat(sprintf("  Window   : %d-year moving average\n", p$window))
