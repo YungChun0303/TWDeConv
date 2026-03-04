@@ -83,28 +83,53 @@ by the solver:
 | `D`  | $(T-k) \times T$ temporal difference penalty |
 | `Ls` | $n \times n$ spatial graph Laplacian |
 
+## Scale to \$1,000s
+
+Median income is in raw dollars (~\$15k–\$96k), which makes the precision
+weights `W` extremely small (~$10^{-8}$). Working in \$1,000s rescales `W`
+to reasonable magnitudes and keeps $\lambda$ parameters interpretable as
+penalties per \$1,000 of signal change.
+
+```{r scale}
+Y_k  <- inp$Y  / 1000          # n x S  in $1,000s
+SE_k <- sqrt(1 / Matrix::diag(inp$W))          # recover SE in dollars
+SE_k <- matrix(SE_k / 1000,                    # convert SE to $1,000s
+               nrow = nrow(Y_k), ncol = ncol(Y_k), byrow = FALSE)
+W_k  <- build_precision_weights(SE_k)           # rebuild W in 1/($1k)^2
+
+cat("Y range ($1000s):", round(range(Y_k, na.rm = TRUE), 1), "\n")
+cat("W diagonal range:", range(Matrix::diag(W_k)), "\n")
+```
+
 # Solve the Deconvolution
 
 ## Single solve with chosen $\lambda$
 
 We start with a single solve using $\lambda_t = 5$ and $\lambda_s = 0.5$.
-These values reflect a stronger temporal penalty (income trends are smoother
-than year-to-year noise) and a moderate spatial penalty.
+With income in \$1,000s, these correspond to penalties of \$5k and \$500
+per unit of temporal curvature and spatial difference respectively.
 
 ```{r solve}
-X_hat <- solve_deconv(
-  Y        = inp$Y,
+# Real income data at tract level requires more ADMM iterations to converge.
+# With income in $1,000s, lambda_t=5, lambda_s=0.5, rho=1: ~3,000 iterations.
+X_hat_k <- solve_deconv(
+  Y        = Y_k,
   M        = inp$M,
-  W        = inp$W,
+  W        = W_k,
   D        = inp$D,
   Ls       = inp$Ls,
   lambda_t = 5,
   lambda_s = 0.5,
   rho      = 1.0,
+  max_iter = 5000,
   verbose  = TRUE
 )
 
+# Convert back to dollars for interpretation
+X_hat <- X_hat_k * 1000
+
 cat("Recovered signal dimensions:", nrow(X_hat), "tracts x", ncol(X_hat), "years\n")
+cat("X_hat range ($):", round(range(X_hat, na.rm = TRUE)), "\n")
 cat("Latent year range:",
     inp$metadata$first_latent_year, "to", inp$metadata$last_latent_year, "\n")
 ```
@@ -113,14 +138,15 @@ cat("Latent year range:",
 
 ```{r solver-diagnostics, fig.height=4}
 solver <- solve_deconv(
-  Y             = inp$Y,
+  Y             = Y_k,
   M             = inp$M,
-  W             = inp$W,
+  W             = W_k,
   D             = inp$D,
   Ls            = inp$Ls,
   lambda_t      = 5,
   lambda_s      = 0.5,
   rho           = 1.0,
+  max_iter      = 5000,
   return_solver = TRUE
 )
 
@@ -302,13 +328,13 @@ lambdas <- c(1, 5, 10, 20)
 
 results_lt <- lapply(lambdas, function(lt) {
   X_tmp <- solve_deconv(
-    Y = inp$Y, M = inp$M, W = inp$W, D = inp$D, Ls = inp$Ls,
+    Y = Y_k, M = inp$M, W = W_k, D = inp$D, Ls = inp$Ls,
     lambda_t = lt, lambda_s = 0.5
   )
   data.frame(
     lambda_t = lt,
     year     = latent_years,
-    mean_inc = colMeans(X_tmp, na.rm = TRUE)
+    mean_inc = colMeans(X_tmp, na.rm = TRUE) * 1000   # back to dollars
   )
 })
 results_lt <- do.call(rbind, results_lt)

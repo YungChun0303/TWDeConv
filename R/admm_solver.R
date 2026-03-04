@@ -264,7 +264,8 @@ ADMMSolver <- R6::R6Class(
       self$Ds_kron <- kron$Ds_kron
 
       # -- Fixed data term in RHS: q = M_kron^T W y -------------
-      y_vec         <- as.numeric(t(self$Y))        # vec(Y^T), length nS
+      y_vec            <- as.numeric(t(self$Y))     # vec(Y^T), length nS
+      y_vec[is.na(y_vec)] <- 0                      # NA obs excluded via W=0
       MtW           <- Matrix::crossprod(self$M_kron, self$W)  # (nT \u00D7 nS) * W
       self$.q_data  <- as.numeric(MtW %*% y_vec)   # nT-vector
 
@@ -437,6 +438,7 @@ ADMMSolver <- R6::R6Class(
         stop("Call run() first.")
       x         <- as.numeric(t(self$X_hat))
       y_vec     <- as.numeric(t(self$Y))
+      y_vec[is.na(y_vec)] <- 0              # NA obs excluded via W=0
       r         <- y_vec - as.numeric(self$M_kron %*% x)
       data_term <- 0.5 * as.numeric(crossprod(r, as.numeric(self$W %*% r)))
       temp_term <- self$lambda_t * sum(abs(as.numeric(self$Dt_kron %*% x)))
