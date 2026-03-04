@@ -23,7 +23,7 @@ where **X** is the unobserved latent annual signal. **TWDeConv** recovers
 **X** by solving a Kronecker-structured spatio-temporal generalised lasso via
 ADMM:
 
-$$\min_X \;\tfrac{1}{2}\|W^{1/2}(\operatorname{vec}(Y) - (I_n \otimes M)\operatorname{vec}(X^\top))\|_2^2 + \lambda_t\|(I_n \otimes D)\operatorname{vec}(X^\top)\|_1 + \lambda_s\|(L_s \otimes I_T)\operatorname{vec}(X^\top)\|_1$$
+$$\min_{X} \;\tfrac{1}{2}\|W^{1/2}(\operatorname{vec}(Y) - (I_n \otimes M)\operatorname{vec}(X^\top))\|_2^2 + \lambda_t\|(I_n \otimes D)\operatorname{vec}(X^\top)\|_1 + \lambda_s\|(L_s \otimes I_T)\operatorname{vec}(X^\top)\|_1$$
 
 - **M** — S × T convolution matrix encoding the 5-year averaging
 - **W** — diagonal precision matrix (inverse ACS sampling variances)
