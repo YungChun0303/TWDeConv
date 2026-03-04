@@ -42,6 +42,8 @@ library(TWDeConv)
 library(ggplot2)
 library(sf)
 library(Matrix)
+
+options(tigris_use_cache = TRUE)   # cache TIGER shapefiles locally
 ```
 
 > **Census API key required.**  If you have not already registered, get a free
@@ -52,16 +54,20 @@ library(Matrix)
 
 # Fetch and Prepare ACS Data
 
-We use four consecutive ACS 5-year windows (end years 2019–2022). This gives:
+We use five consecutive ACS 5-year windows (end years 2018–2022). This gives:
 
-- $S = 4$ observed windows
-- $T = S + 4 = 8$ latent annual time points (2015–2022)
+- $S = 5$ observed windows
+- $T = S + 4 = 9$ latent annual time points (2014–2022)
+
+Including the window ending in 2020 (covering 2016–2020) means the model has
+information about the pandemic year, enabling recovery of the 2020 annual
+estimate at the tract level — which has no direct Census source.
 
 ```{r fetch-data, cache=TRUE}
 inp <- prep_acs_for_deconv(
   state     = "MO",
-  county    = "St. Louis City",
-  year_ends = 2019:2022,
+  county    = "510",
+  year_ends = 2018:2022,
   variables = c(med_inc = "B19013_001"),
   k         = 2L,          # 2nd-order temporal difference (trend filter)
   queen     = TRUE,         # Queen contiguity for spatial Laplacian
@@ -196,7 +202,7 @@ the observed 5-year ACS values.
 ```{r time-series, fig.height=5}
 # Observed Y in long format
 Y_long <- as.data.frame(inp$Y)
-colnames(Y_long) <- as.character(2019:2022)
+colnames(Y_long) <- as.character(inp$metadata$year_ends)
 Y_long$GEOID     <- rownames(inp$Y)
 
 Y_long <- tidyr::pivot_longer(
@@ -272,8 +278,8 @@ tracts_sf <- tidycensus::get_acs(
   dplyr::select(GEOID, geometry) |>
   dplyr::distinct(GEOID, .keep_all = TRUE)
 
-# Attach recovered estimates for selected years
-years_to_map <- c(2015, 2017, 2019, 2021, 2022)
+# Attach recovered estimates for selected years (include 2020)
+years_to_map <- c(2014, 2016, 2018, 2020, 2022)
 
 map_df <- X_long |>
   dplyr::filter(year %in% years_to_map) |>
@@ -354,6 +360,118 @@ ggplot(results_lt, aes(x = year, y = mean_inc / 1000,
   theme_bw() +
   theme(legend.position = "right",
         axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+# Validation: Comparison with 2020 ACS 1-Year Estimates
+
+## Why not the 2020 Decennial Census?
+
+The **2020 Decennial Census does not collect income data** — it only covers
+basic demographics (population, race, housing units).  Income has been measured
+exclusively by the ACS since the Census long-form was discontinued after 2000.
+
+The closest independent benchmark is the **2020 ACS 1-year experimental
+estimates**, released by the Census Bureau with caveats about reduced data
+quality due to COVID-19 field disruptions.  Crucially, **ACS 1-year data is
+only published for areas with population ≥ 65,000**, so tract-level 2020
+annual estimates do not exist from any Census source.  This is precisely the
+gap TWDeConv fills.
+
+## City-level sanity check
+
+We can validate at the **city (county) level** by comparing the population-
+weighted mean of our deconvolved tract estimates with the 2020 ACS 1-year
+city estimate.
+
+```{r validation-2020, fig.height=4}
+# -- 1. Fetch 2020 ACS 1-year estimate for St. Louis City (county level) ----
+# Note: survey="acs1", year=2020 returns the experimental 1-year estimates.
+acs1_2020 <- tryCatch(
+  tidycensus::get_acs(
+    geography = "county",
+    variables = c(med_inc = "B19013_001"),
+    state     = "MO",
+    county    = "510",
+    year      = 2020,
+    survey    = "acs1"
+  ),
+  error = function(e) {
+    message("2020 ACS 1-year fetch failed: ", conditionMessage(e))
+    NULL
+  }
+)
+
+# -- 2. Deconvolved 2020 city-level estimate (unweighted tract mean) ----------
+x_2020_tract <- X_long$med_inc_hat[X_long$year == 2020]
+x_2020_city  <- mean(x_2020_tract, na.rm = TRUE)
+
+# -- 3. Print comparison ------------------------------------------------------
+cat("=== 2020 Median Household Income — St. Louis City ===\n\n")
+cat(sprintf("TWDeConv deconvolved (tract mean):  $%s\n",
+            format(round(x_2020_city), big.mark = ",")))
+
+if (!is.null(acs1_2020)) {
+  cat(sprintf("ACS 1-year 2020 (city, experimental): $%s  (MOE: $%s)\n",
+              format(acs1_2020$estimate[1], big.mark = ","),
+              format(acs1_2020$moe[1],      big.mark = ",")))
+  cat(sprintf("Difference: $%s\n",
+              format(round(x_2020_city - acs1_2020$estimate[1]), big.mark = ",")))
+} else {
+  cat("ACS 1-year 2020 not available (try again when Census API is accessible).\n")
+}
+
+# -- 4. Tract distribution for 2020 ------------------------------------------
+x2020_df <- data.frame(med_inc_2020 = x_2020_tract[!is.na(x_2020_tract)])
+
+ggplot(x2020_df, aes(x = med_inc_2020 / 1000)) +
+  geom_histogram(bins = 25, fill = "#2c7bb6", colour = "white", alpha = 0.85) +
+  { if (!is.null(acs1_2020))
+      geom_vline(xintercept = acs1_2020$estimate[1] / 1000,
+                 colour = "#d7191c", linewidth = 1, linetype = "dashed")
+  } +
+  geom_vline(xintercept = x_2020_city / 1000,
+             colour = "#1a9641", linewidth = 1, linetype = "solid") +
+  scale_x_continuous(labels = scales::dollar_format(suffix = "k")) +
+  labs(
+    title    = "Distribution of deconvolved 2020 tract-level median household income",
+    subtitle = paste0(
+      "Green line = deconvolved city mean ($",
+      format(round(x_2020_city), big.mark = ","), ")",
+      if (!is.null(acs1_2020))
+        paste0("   |   Red dashed = ACS 1-yr city estimate ($",
+               format(acs1_2020$estimate[1], big.mark = ","), ")")
+      else ""
+    ),
+    x = "Median household income (tract)", y = "Number of tracts"
+  ) +
+  theme_bw()
+```
+
+## Tract-level 2020 map
+
+```{r map-2020, fig.height=5}
+map_2020 <- X_long |>
+  dplyr::filter(year == 2020) |>
+  dplyr::left_join(tracts_sf, by = "GEOID") |>
+  sf::st_as_sf()
+
+ggplot(map_2020) +
+  geom_sf(aes(fill = med_inc_hat / 1000), colour = NA) +
+  scale_fill_viridis_c(
+    option   = "magma", direction = -1,
+    name     = "Median income\n($000s)",
+    na.value = "grey80"
+  ) +
+  labs(
+    title    = "Deconvolved 2020 annual median household income — St. Louis City tracts",
+    subtitle = "TWDeConv estimate  |  No direct Census source exists at tract level for 2020"
+  ) +
+  theme_void() +
+  theme(
+    legend.position = "right",
+    plot.title      = element_text(face = "bold"),
+    plot.subtitle   = element_text(colour = "grey40", size = 9)
+  )
 ```
 
 # Session Info
