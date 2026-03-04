@@ -161,10 +161,13 @@
   candidates <- grep("^(GEO_?ID|GEOID|geo_?id)$",
                      names(vre_df), ignore.case = TRUE, value = TRUE)
   if (length(candidates) == 0L) {
-    # Fallback: first column that looks like a Census GEOID (all digits, len 11)
+    # Fallback: first column whose values look like Census GEOIDs
+    # (all-digit strings of consistent length, stripped of any "1400000US" prefix)
     for (nm in names(vre_df)) {
-      vals <- vre_df[[nm]]
-      if (is.character(vals) && all(nchar(na.omit(vals)) == 11L))
+      vals <- sub("^\\d+US", "", as.character(vre_df[[nm]]))
+      vals <- na.omit(vals)
+      if (length(vals) > 0L && all(grepl("^\\d+$", vals)) &&
+          length(unique(nchar(vals))) == 1L)
         return(nm)
     }
     return(names(vre_df)[1L])  # last resort: first column
@@ -259,7 +262,7 @@ compute_sdr_se <- function(estimate, replicates) {
 #' Fetch ACS 5-Year Estimates, Geometries, and Variance Replicate Estimates
 #'
 #' @description
-#' Retrieves Census-tract-level ACS 5-year data via
+#' Retrieves ACS 5-year data for a user-specified geographic unit via
 #' [tidycensus::get_acs()], augmented with Variance Replicate Estimate (VRE)
 #' tables from the Census Bureau file server.  The result is a structured
 #' list containing the point-estimate [`sf`][sf::sf] object, standard error
@@ -286,32 +289,46 @@ compute_sdr_se <- function(estimate, replicates) {
 #' VRE tables are pre-computed replicate-based estimates published by the
 #' Census Bureau at
 #' `https://www2.census.gov/programs-surveys/acs/replicate_estimates/`.
-#' They are available for B- and C-series tables from 2013 to the most
-#' recent 5-year release.  The function tries several URL patterns and
-#' caches downloaded zip files in `cache_dir` to avoid redundant downloads.
-#' If all download attempts fail (e.g., no internet, table not available)
-#' it silently falls back to MOE-derived SE and sets
-#' `metadata$vre_source = "moe"`.
+#' They are available for B- and C-series tables at the **tract** level from
+#' 2013 to the most recent 5-year release.  For all other geographies (block
+#' group, ZCTA, county, etc.) VRE is not published and the function
+#' automatically falls back to MOE-derived SE.  The function tries several
+#' URL patterns and caches downloaded zip files in `cache_dir` to avoid
+#' redundant downloads.
 #'
 #' ## Geometry
 #'
-#' Tract geometries are fetched via the Census TIGER/Line server through
+#' Geometries are fetched via the Census TIGER/Line server through
 #' `tidycensus`.  Set `geometry = FALSE` if the TIGER server is unavailable
 #' or the geometry is not needed.
+#'
+#' ## Geographic unit
+#'
+#' The `geography` argument is passed directly to [tidycensus::get_acs()].
+#' Common values include `"tract"` (default), `"block group"`, `"county"`,
+#' and `"zcta"`.  Note that `county` filtering is ignored by `tidycensus`
+#' for `"zcta"` — a warning is issued in that case.
 #'
 #' @param state Character. State name (e.g., `"Illinois"`), 2-letter
 #'   abbreviation (`"IL"`), or 2-digit FIPS code (`"17"`).
 #' @param county Character or `NULL`. County name, partial name, or 3-digit
-#'   FIPS code.  `NULL` (default) retrieves all tracts in the state.
+#'   FIPS code.  `NULL` (default) retrieves all units in the state.
+#'   Ignored for `geography = "zcta"`.
 #' @param year_end Integer. End year of the ACS 5-year period
 #'   (e.g., `2022` for ACS 2018-2022).  Must be >= 2013.
 #' @param variables Named or unnamed character vector of ACS variable codes,
 #'   e.g. `c(med_inc = "B19013_001", pop = "B01003_001")`.  Names become
 #'   column prefixes in the output; defaults to the variable codes.
-#' @param geometry Logical. Attach Census tract polygons via TIGER/Line
+#' @param geography Character. Geographic unit passed to
+#'   [tidycensus::get_acs()].  Common values: `"tract"` (default),
+#'   `"block group"`, `"county"`, `"zcta"`.  VRE-based SDR standard errors
+#'   are only available for `"tract"`; all other geographies fall back to
+#'   MOE-derived SE.
+#' @param geometry Logical. Attach polygon geometries via TIGER/Line
 #'   (default `TRUE`).  Set to `FALSE` if the geometry server is unavailable.
 #' @param vre Logical. Attempt to download VRE replicate tables and compute
-#'   SDR standard errors (default `TRUE`).  Falls back to MOE on failure.
+#'   SDR standard errors (default `TRUE`).  Automatically disabled for
+#'   geographies other than `"tract"`.  Falls back to MOE on failure.
 #' @param moe_level Numeric. ACS margin-of-error confidence level: `90`
 #'   (default, ACS standard), `95`, or `99`.
 #' @param cache_dir Character. Directory for caching downloaded VRE files
@@ -325,7 +342,7 @@ compute_sdr_se <- function(estimate, replicates) {
 #'
 #' @return A list of class `"ACSData"` with components:
 #' \describe{
-#'   \item{`$sf`}{[`sf`][sf::sf] data frame with one row per tract:
+#'   \item{`$sf`}{[`sf`][sf::sf] data frame with one row per geographic unit:
 #'     `GEOID`, `NAME`, `{var}E` (estimate), `{var}M` (MOE),
 #'     `{var}_se` (standard error), and (when `vre = TRUE` and download
 #'     succeeds) `{var}_R1` ... `{var}_R80` replicate columns.
@@ -338,31 +355,39 @@ compute_sdr_se <- function(estimate, replicates) {
 #'     matrix of replicate estimates.  `NULL` entries indicate variables for
 #'     which VRE data were unavailable.}
 #'   \item{`$metadata`}{Named list: `state`, `state_fips`, `county`,
-#'     `year_end`, `year_range`, `variables`, `var_names`, `n_tracts`,
-#'     `moe_level`, `vre_source` (`"sdr"` or `"moe"`), `call_time`.}
+#'     `geography`, `year_end`, `year_range`, `variables`, `var_names`,
+#'     `n_units`, `moe_level`, `vre_source` (`"sdr"` or `"moe"`),
+#'     `call_time`.}
 #' }
 #'
 #' @examples
 #' \dontrun{
-#' # Basic call -- Cook County, IL, ACS 2018-2022
+#' # Tract-level (default) -- Cook County, IL, ACS 2018-2022
 #' acs <- fetch_acs_vre_data(
 #'   state     = "IL",
 #'   county    = "Cook",
 #'   year_end  = 2022,
-#'   variables = c(med_inc = "B19013_001",
-#'                 pov_pct = "S1701_C03_001"),
+#'   variables = c(med_inc = "B19013_001"),
+#'   geography = "tract",
 #'   cache_dir = "~/acs_cache"
 #' )
-#' print(acs)
 #'
-#' # Inspect the SE source
-#' acs$metadata$vre_source          # "sdr" or "moe"
+#' # Block-group level (VRE unavailable; falls back to MOE-derived SE)
+#' acs_bg <- fetch_acs_vre_data(
+#'   state     = "IL",
+#'   county    = "Cook",
+#'   year_end  = 2022,
+#'   variables = c(med_inc = "B19013_001"),
+#'   geography = "block group"
+#' )
 #'
-#' # Build the W matrix for deconvolution
-#' W <- build_precision_weights(acs$se)
-#'
-#' # Build the spatial Laplacian for deconvolution
-#' Ls <- build_spatial_laplacian(acs$sf)
+#' # ZCTA level (county filter is ignored)
+#' acs_zip <- fetch_acs_vre_data(
+#'   state     = "IL",
+#'   year_end  = 2022,
+#'   variables = c(med_inc = "B19013_001"),
+#'   geography = "zcta"
+#' )
 #' }
 #'
 #' @seealso [compute_sdr_se()], [build_precision_weights()],
@@ -372,6 +397,7 @@ fetch_acs_vre_data <- function(state,
                                 county        = NULL,
                                 year_end,
                                 variables,
+                                geography     = "tract",
                                 geometry      = TRUE,
                                 vre           = TRUE,
                                 moe_level     = 90,
@@ -383,6 +409,19 @@ fetch_acs_vre_data <- function(state,
   # -- 0. Validate & resolve identifiers --------------------------
   if (!requireNamespace("tidycensus", quietly = TRUE))
     stop("Package 'tidycensus' is required.")
+
+  geography <- tolower(trimws(geography))
+
+  # VRE replicate tables are only published for Census tracts
+  vre_geographies <- "tract"
+  if (vre && !geography %in% vre_geographies) {
+    if (!quiet)
+      message(sprintf(
+        "  VRE replicate tables are not available for geography = '%s'; ",
+        geography), "falling back to MOE-derived SE.")
+    vre <- FALSE
+  }
+
   if (vre && !requireNamespace("httr", quietly = TRUE)) {
     message("Package 'httr' needed for VRE download; falling back to MOE.")
     vre <- FALSE
@@ -396,7 +435,15 @@ fetch_acs_vre_data <- function(state,
     tidycensus::census_api_key(census_api_key, install = FALSE)
 
   state_fips  <- .state_to_fips(state)
-  county_fips <- .county_to_fips(county, state_fips)
+
+  # ZCTAs do not support county-level filtering in tidycensus
+  if (geography == "zcta" && !is.null(county)) {
+    warning("county filtering is not supported for geography = 'zcta'; ",
+            "the `county` argument will be ignored.", call. = FALSE)
+    county <- NULL
+  }
+  county_fips <- if (geography == "zcta") NULL else
+                   .county_to_fips(county, state_fips)
 
   # -- 1. Canonicalise variable names ------------------------------
   # Strip trailing "E" suffix users sometimes include (B19013_001E -> B19013_001)
@@ -410,15 +457,14 @@ fetch_acs_vre_data <- function(state,
 
   year_range  <- sprintf("%d\u2013%d", year_end - 4L, year_end)
   if (!quiet)
-    message(sprintf("Fetching ACS 5-year %s | state=%s | %d variable(s) | %d tracts requested...",
-                    year_range, state, length(variables),
-                    if (!is.null(county_fips)) NA else NA))
+    message(sprintf("Fetching ACS 5-year %s | geography=%s | state=%s | %d variable(s)...",
+                    year_range, geography, state, length(variables)))
 
   # -- 2. Fetch point estimates (geometry fetched separately below to avoid
   #       tidycensus v1.7.x silent failure with output="wide" + geometry=TRUE)
   acs_raw <- tryCatch(
     tidycensus::get_acs(
-      geography = "tract",
+      geography = geography,
       variables = named_vars,
       state     = state_fips,
       county    = county_fips,
@@ -429,21 +475,35 @@ fetch_acs_vre_data <- function(state,
       moe_level = moe_level,
       quiet     = quiet
     ),
-    error = function(e) stop("get_acs() failed: ", conditionMessage(e))
+    error = function(e) {
+      if (geometry) {
+        # Retry without geometry (TIGER server can be intermittently down)
+        if (!quiet)
+          message("  Geometry download failed; retrying without geometry. ",
+                  "Error: ", conditionMessage(e))
+        tryCatch(
+          tidycensus::get_acs(
+            geography = geography,
+            variables = named_vars,
+            state     = state_fips,
+            county    = county_fips,
+            year      = year_end,
+            survey    = "acs5",
+            output    = "wide",
+            geometry  = FALSE,
+            moe_level = moe_level,
+            quiet     = quiet
+          ),
+          error = function(e2) stop("get_acs() failed: ", conditionMessage(e2))
+        )
+      } else {
+        stop("get_acs() failed: ", conditionMessage(e))
+      }
+    }
   )
 
-  if (geometry) {
-    if (!requireNamespace("tigris", quietly = TRUE))
-      stop("Package 'tigris' is required when geometry = TRUE.")
-    tracts_sf  <- tigris::tracts(state = state_fips, county = county_fips,
-                                  year = year_end, progress_bar = FALSE)
-    geom_order <- match(acs_raw$GEOID, tracts_sf$GEOID)
-    acs_raw    <- sf::st_set_geometry(acs_raw,
-                                      sf::st_geometry(tracts_sf)[geom_order])
-  }
-
-  n_tracts <- nrow(acs_raw)
-  if (!quiet) message(sprintf("  Retrieved %d tracts.", n_tracts))
+  n_units <- nrow(acs_raw)
+  if (!quiet) message(sprintf("  Retrieved %d %s(s).", n_units, geography))
 
   # -- 3. Extract estimate and MOE matrices ------------------------
   # tidycensus wide output: columns named {var_name}E and {var_name}M
@@ -512,7 +572,7 @@ fetch_acs_vre_data <- function(state,
         if (!is.null(rep_cols) && length(rep_cols) == 80L &&
             sum(!is.na(row_idx)) > 0L) {
 
-          rep_mat <- matrix(NA_real_, nrow = n_tracts, ncol = 80L)
+          rep_mat <- matrix(NA_real_, nrow = n_units, ncol = 80L)
           valid   <- !is.na(row_idx)
           rep_raw <- as.matrix(vre_df[row_idx[valid], rep_cols, drop = FALSE])
           storage.mode(rep_raw) <- "double"
@@ -573,11 +633,12 @@ fetch_acs_vre_data <- function(state,
         state      = state,
         state_fips = state_fips,
         county     = county,
+        geography  = geography,
         year_end   = year_end,
         year_range = year_range,
         variables  = variables,
         var_names  = var_names,
-        n_tracts   = n_tracts,
+        n_units    = n_units,
         moe_level  = moe_level,
         vre_source = vre_source,
         call_time  = Sys.time()
@@ -603,11 +664,13 @@ print.ACSData <- function(x, ...) {
   has_rep  <- !all(vapply(x$replicates, is.null, logical(1L)))
 
   cat("\u2500\u2500 ACSData (TWDeConv) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n")
-  cat(sprintf("  Geography : Census tracts  |  %s county/ies, %s\n",
-              if (is.null(m$county)) "all" else m$county, m$state))
+  cat(sprintf("  Geography : %s  |  %s%s\n",
+              m$geography,
+              if (is.null(m$county)) "all counties, " else paste0(m$county, " county, "),
+              m$state))
   cat(sprintf("  Period    : ACS 5-year %s  (end year %d)\n",
               m$year_range, m$year_end))
-  cat(sprintf("  Tracts    : %d\n", m$n_tracts))
+  cat(sprintf("  Units     : %d\n", m$n_units))
   cat(sprintf("  Variables : %d\n", length(m$var_names)))
   for (j in seq_along(m$var_names)) {
     has_r <- !is.null(x$replicates[[j]])
@@ -638,18 +701,23 @@ print.ACSData <- function(x, ...) {
 #'
 #' @param state Character. State name, 2-letter abbreviation, or FIPS code.
 #' @param county Character or `NULL`. County name, partial name, or 3-digit
-#'   FIPS. `NULL` retrieves all tracts in the state.
+#'   FIPS. `NULL` retrieves all units in the state. Ignored for
+#'   `geography = "zcta"`.
 #' @param year_ends Integer vector of ACS window end-years (must be sorted
 #'   ascending). Each entry corresponds to one ACS 5-year window
 #'   (e.g., `2022` for ACS 2018-2022). Must be >= 2013.
 #' @param variables Single ACS variable code (deconvolution is univariate per
 #'   call), e.g. `"B19013_001"`. May be named.
+#' @param geography Character. Geographic unit passed to
+#'   [tidycensus::get_acs()].  Common values: `"tract"` (default),
+#'   `"block group"`, `"county"`, `"zcta"`.  VRE-based SDR standard errors
+#'   are only available for `"tract"`; all others fall back to MOE-derived SE.
 #' @param k Integer. Temporal difference order for the penalty matrix D.
 #'   Default `2L`.
 #' @param queen Logical. Use Queen contiguity for the spatial Laplacian?
 #'   Default `TRUE`.
 #' @param vre Logical. Attempt VRE download for SDR standard errors?
-#'   Default `TRUE`.
+#'   Default `TRUE`. Automatically disabled for non-tract geographies.
 #' @param use_srvyr Reserved parameter (unused). Default `TRUE`.
 #' @param cache_dir Character. Cache directory for VRE downloads.
 #'   Default `tempdir()`.
@@ -658,15 +726,16 @@ print.ACSData <- function(x, ...) {
 #'
 #' @return A named list of class `"DeconvInput"` with components:
 #' \describe{
-#'   \item{`Y`}{n  x  S numeric matrix of ACS estimates (tracts  x  windows).}
+#'   \item{`Y`}{n  x  S numeric matrix of ACS estimates (units  x  windows).}
 #'   \item{`M`}{S  x  T sparse convolution matrix from
 #'     [build_acs_convolution_matrix()].}
 #'   \item{`W`}{(nS)  x  (nS) sparse diagonal precision weight matrix.}
 #'   \item{`D`}{(T-k)  x  T sparse temporal difference matrix.}
 #'   \item{`Ls`}{n  x  n sparse symmetric spatial Laplacian.}
-#'   \item{`metadata`}{Named list: `state`, `county`, `year_ends`,
-#'     `variables`, `var_name`, `n_tracts`, `T_years`, `S_windows`, `k`,
-#'     `first_latent_year`, `last_latent_year`, `vre_sources`.}
+#'   \item{`metadata`}{Named list: `state`, `county`, `geography`,
+#'     `year_ends`, `variables`, `var_name`, `n_units`, `T_years`,
+#'     `S_windows`, `k`, `first_latent_year`, `last_latent_year`,
+#'     `vre_sources`.}
 #' }
 #'
 #' @examples
@@ -696,6 +765,7 @@ prep_acs_for_deconv <- function(state,
                                 county         = NULL,
                                 year_ends,
                                 variables,
+                                geography      = "tract",
                                 k              = 2L,
                                 queen          = TRUE,
                                 vre            = TRUE,
@@ -734,6 +804,7 @@ prep_acs_for_deconv <- function(state,
       county         = county,
       year_end       = yr,
       variables      = variables,
+      geography      = geography,
       geometry       = (i == 1L),   # geometry only for first call
       vre            = vre,
       cache_dir      = cache_dir,
@@ -827,10 +898,11 @@ prep_acs_for_deconv <- function(state,
       metadata = list(
         state             = state,
         county            = county,
+        geography         = geography,
         year_ends         = year_ends,
         variables         = as.character(variables),
         var_name          = var_name,
-        n_tracts          = length(common_geoids),
+        n_units           = length(common_geoids),
         T_years           = T_years,
         S_windows         = S,
         k                 = k,
@@ -851,7 +923,8 @@ prep_acs_for_deconv <- function(state,
 print.DeconvInput <- function(x, ...) {
   m <- x$metadata
   cat("\u2500\u2500 DeconvInput (TWDeConv) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n")
-  cat(sprintf("  Geography : Census tracts  |  %s%s\n",
+  cat(sprintf("  Geography : %s  |  %s%s\n",
+              m$geography,
               if (is.null(m$county)) "all counties, "
               else paste0(m$county, " county, "),
               m$state))
@@ -862,8 +935,8 @@ print.DeconvInput <- function(x, ...) {
               m$year_ends[length(m$year_ends)]))
   cat(sprintf("  Latent yrs: %d  (%d \u2013 %d)\n",
               m$T_years, m$first_latent_year, m$last_latent_year))
-  cat(sprintf("  Tracts (n): %d\n", m$n_tracts))
-  cat(sprintf("  Y dims    : %d \u00d7 %d  (tracts \u00d7 windows)\n",
+  cat(sprintf("  Units (n) : %d\n", m$n_units))
+  cat(sprintf("  Y dims    : %d \u00d7 %d  (units \u00d7 windows)\n",
               nrow(x$Y), ncol(x$Y)))
   cat(sprintf("  M dims    : %d \u00d7 %d  (windows \u00d7 latent years)\n",
               nrow(x$M), ncol(x$M)))
@@ -899,8 +972,8 @@ summary.ACSData <- function(object, ...) {
   se   <- object$se
 
   cat("\u2500\u2500 ACSData Summary \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n")
-  cat(sprintf("  %d tracts  |  %s  |  %s\n",
-              m$n_tracts, m$year_range, m$state))
+  cat(sprintf("  %d %s(s)  |  %s  |  %s\n",
+              m$n_units, m$geography, m$year_range, m$state))
   cat("\n  Estimates:\n")
   for (j in seq_along(m$var_names)) {
     vals <- est[, j]
