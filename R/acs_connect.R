@@ -460,47 +460,51 @@ fetch_acs_vre_data <- function(state,
     message(sprintf("Fetching ACS 5-year %s | geography=%s | state=%s | %d variable(s)...",
                     year_range, geography, state, length(variables)))
 
-  # -- 2. Fetch point estimates (geometry fetched separately below to avoid
-  #       tidycensus v1.7.x silent failure with output="wide" + geometry=TRUE)
-  acs_raw <- tryCatch(
-    tidycensus::get_acs(
-      geography = geography,
-      variables = named_vars,
-      state     = state_fips,
-      county    = county_fips,
-      year      = year_end,
-      survey    = "acs5",
-      output    = "wide",
-      geometry  = FALSE,
-      moe_level = moe_level,
-      quiet     = quiet
-    ),
-    error = function(e) {
-      if (geometry) {
-        # Retry without geometry (TIGER server can be intermittently down)
+  # -- 2. Fetch point estimates -------------------------------------------
+  # Try with geometry=TRUE when requested; fall back to FALSE on any error
+  # (some tidycensus versions have issues with output="wide" + geometry=TRUE)
+  acs_raw <- NULL
+
+  if (geometry) {
+    acs_raw <- tryCatch(
+      tidycensus::get_acs(
+        geography = geography,
+        variables = named_vars,
+        state     = state_fips,
+        county    = county_fips,
+        year      = year_end,
+        survey    = "acs5",
+        output    = "wide",
+        geometry  = TRUE,
+        moe_level = moe_level,
+        quiet     = quiet
+      ),
+      error = function(e) {
         if (!quiet)
           message("  Geometry download failed; retrying without geometry. ",
                   "Error: ", conditionMessage(e))
-        tryCatch(
-          tidycensus::get_acs(
-            geography = geography,
-            variables = named_vars,
-            state     = state_fips,
-            county    = county_fips,
-            year      = year_end,
-            survey    = "acs5",
-            output    = "wide",
-            geometry  = FALSE,
-            moe_level = moe_level,
-            quiet     = quiet
-          ),
-          error = function(e2) stop("get_acs() failed: ", conditionMessage(e2))
-        )
-      } else {
-        stop("get_acs() failed: ", conditionMessage(e))
+        NULL
       }
-    }
-  )
+    )
+  }
+
+  if (is.null(acs_raw)) {
+    acs_raw <- tryCatch(
+      tidycensus::get_acs(
+        geography = geography,
+        variables = named_vars,
+        state     = state_fips,
+        county    = county_fips,
+        year      = year_end,
+        survey    = "acs5",
+        output    = "wide",
+        geometry  = FALSE,
+        moe_level = moe_level,
+        quiet     = quiet
+      ),
+      error = function(e) stop("get_acs() failed: ", conditionMessage(e))
+    )
+  }
 
   n_units <- nrow(acs_raw)
   if (!quiet) message(sprintf("  Retrieved %d %s(s).", n_units, geography))
