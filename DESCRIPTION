@@ -2,7 +2,7 @@ Package: TWDeConv
 Title: Spatio-Temporal Deconvolution of Moving-Average Estimates
 Version: 0.1.0
 Authors@R:
-    person("Yungchun", "Li", role = c("aut", "cre"),
+    person("Yung", "Chun", role = c("aut", "cre"),
            email = "yungchun@wustl.edu",
            comment = c(ORCID = ""))
 Description: Provides tools to deconvolve multi-year moving-average spatial
