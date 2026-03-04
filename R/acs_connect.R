@@ -414,7 +414,8 @@ fetch_acs_vre_data <- function(state,
                     year_range, state, length(variables),
                     if (!is.null(county_fips)) NA else NA))
 
-  # -- 2. Fetch point estimates (+ geometry if requested) ----------
+  # -- 2. Fetch point estimates (geometry fetched separately below to avoid
+  #       tidycensus v1.7.x silent failure with output="wide" + geometry=TRUE)
   acs_raw <- tryCatch(
     tidycensus::get_acs(
       geography = "tract",
@@ -424,36 +425,22 @@ fetch_acs_vre_data <- function(state,
       year      = year_end,
       survey    = "acs5",
       output    = "wide",
-      geometry  = geometry,
+      geometry  = FALSE,
       moe_level = moe_level,
       quiet     = quiet
     ),
-    error = function(e) {
-      if (geometry) {
-        # Retry without geometry (TIGER server can be intermittently down)
-        if (!quiet)
-          message("  Geometry download failed; retrying without geometry. ",
-                  "Error: ", conditionMessage(e))
-        tryCatch(
-          tidycensus::get_acs(
-            geography = "tract",
-            variables = named_vars,
-            state     = state_fips,
-            county    = county_fips,
-            year      = year_end,
-            survey    = "acs5",
-            output    = "wide",
-            geometry  = FALSE,
-            moe_level = moe_level,
-            quiet     = quiet
-          ),
-          error = function(e2) stop("get_acs() failed: ", conditionMessage(e2))
-        )
-      } else {
-        stop("get_acs() failed: ", conditionMessage(e))
-      }
-    }
+    error = function(e) stop("get_acs() failed: ", conditionMessage(e))
   )
+
+  if (geometry) {
+    if (!requireNamespace("tigris", quietly = TRUE))
+      stop("Package 'tigris' is required when geometry = TRUE.")
+    tracts_sf  <- tigris::tracts(state = state_fips, county = county_fips,
+                                  year = year_end, progress_bar = FALSE)
+    geom_order <- match(acs_raw$GEOID, tracts_sf$GEOID)
+    acs_raw    <- sf::st_set_geometry(acs_raw,
+                                      sf::st_geometry(tracts_sf)[geom_order])
+  }
 
   n_tracts <- nrow(acs_raw)
   if (!quiet) message(sprintf("  Retrieved %d tracts.", n_tracts))
