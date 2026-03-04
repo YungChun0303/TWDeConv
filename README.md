@@ -119,11 +119,11 @@ dim(X_hat)   # n_tracts × T_years
 If you use **TWDeConv** in published research, please cite:
 
 ```
-Li, Y. (2025). TWDeConv: Spatio-temporal deconvolution of moving-average
+Chun, Y. and Mei, X. (2026). TWDeConv: Spatio-temporal deconvolution of moving-average
 estimates. R package version 0.1.0.
 https://github.com/YungChun0303/TWDeConv
 ```
 
 ## License
 
-MIT © 2025 Yungchun Li
+MIT © 2025 Chun, Yung
