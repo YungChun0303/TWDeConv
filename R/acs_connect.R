@@ -775,7 +775,8 @@ prep_acs_for_deconv <- function(state,
                                 vre            = TRUE,
                                 use_srvyr      = TRUE,
                                 cache_dir      = tempdir(),
-                                census_api_key = NULL) {
+                                census_api_key = NULL,
+                                quiet          = FALSE) {
 
   # -- 1. Validate inputs ----------------------------------------
   year_ends <- as.integer(year_ends)
