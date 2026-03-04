@@ -1,0 +1,532 @@
+---
+title: "Estimating Annual Non-Hispanic Black Population Share in Cook County, IL"
+subtitle: "A TWDeConv Example: Deconvolving ACS 5-Year Estimates and Validating Against the 2020 Decennial Census"
+author: "TWDeConv Example"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    theme: flatly
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.width  = 9,
+  fig.height = 6
+)
+```
+
+# Background
+
+The ACS 5-year estimate for the proportion of non-Hispanic (NH) Black residents
+in Census tract $i$ ending in year $s$ is approximately:
+
+$$P_{i,s} = \frac{1}{5}\sum_{t=s-4}^{s} X_{i,t} + \varepsilon_{i,s}$$
+
+where $X_{i,t}$ is the **true annual** NH Black population share — never
+directly observed at the annual, tract level.  **TWDeConv** recovers $X$ by
+solving a Kronecker-structured spatio-temporal generalised lasso via ADMM.
+
+Because the observable $P_{i,s}$ is a **derived proportion** (not a single
+ACS variable), we compute it and its standard error from two ACS variables:
+
+| Variable | Description |
+|----------|-------------|
+| `B03002_001` | Total population |
+| `B03002_004` | Not Hispanic or Latino: Black or African American alone |
+
+$$P_{i,s} = \frac{\hat{X}^{\text{Black}}_{i,s}}{\hat{X}^{\text{Total}}_{i,s}},
+\quad
+\widehat{\text{SE}}(P_{i,s}) = \frac{1}{\hat{X}^{\text{Total}}_{i,s}}
+\sqrt{\widehat{\text{SE}}^2_{\text{Black}} - P_{i,s}^2\,
+\widehat{\text{SE}}^2_{\text{Total}}}$$
+
+(ACS ratio SE formula; falls back to the sum-of-squares form when the
+discriminant is negative.)
+
+The recovered 2020 annual estimates are then validated against the
+**2020 Decennial Census** PL 94-171 redistricting file — a full enumeration
+with no sampling error — making this the only example in the package with
+near-true ground truth at the tract level.
+
+Cook County, IL contains ~1,300 Census tracts, a substantially larger
+problem than the St. Louis City income example.
+
+# Setup
+
+```{r packages}
+library(TWDeConv)
+library(ggplot2)
+library(sf)
+library(Matrix)
+
+options(tigris_use_cache = TRUE)
+```
+
+> **Census API key required.**  Register at
+> <https://api.census.gov/data/key_signup.html> and install once with:
+> ```r
+> tidycensus::census_api_key("YOUR_KEY_HERE", install = TRUE)
+> ```
+
+# Fetch and Prepare ACS Data
+
+We use five consecutive ACS 5-year windows (end years 2018–2022):
+
+- $S = 5$ observed windows
+- $T = S + 4 = 9$ latent annual time points (2014–2022)
+
+## Step 1: Structural matrices from NH Black counts
+
+`prep_acs_for_deconv()` is called with `B03002_004` (NH Black count) to
+obtain the five structural matrices ($Y$, $M$, $W$, $D$, $L_s$) and the
+aligned GEOID set.  We will replace $Y$ and $W$ with proportion-based
+counterparts in Step 2.
+
+```{r fetch-black, cache=TRUE}
+year_ends <- 2018:2022
+S         <- length(year_ends)
+
+inp_black <- prep_acs_for_deconv(
+  state     = "IL",
+  county    = "Cook",
+  year_ends = year_ends,
+  variables = c(black_nh = "B03002_004"),
+  k         = 2L,
+  queen     = TRUE,
+  vre       = TRUE,
+  cache_dir = "~/acs_cache"
+)
+print(inp_black)
+
+common_geoids <- rownames(inp_black$Y)
+n_tracts      <- length(common_geoids)
+cat("Common tracts across all windows:", n_tracts, "\n")
+```
+
+## Step 2: Fetch total population (denominator)
+
+```{r fetch-total, cache=TRUE}
+total_list <- vector("list", S)
+for (i in seq_len(S)) {
+  total_list[[i]] <- fetch_acs_vre_data(
+    state     = "IL",
+    county    = "Cook",
+    year_end  = year_ends[i],
+    variables = c(total = "B03002_001"),
+    geometry  = FALSE,
+    vre       = FALSE,          # VRE not needed for denominator
+    cache_dir = "~/acs_cache",
+    quiet     = TRUE
+  )
+}
+```
+
+## Step 3: Compute proportion matrix Y and precision weights W
+
+```{r build-rates}
+# -- NH Black counts and their SEs (n x S) ----------------------------------
+Y_count  <- inp_black$Y
+SE_count <- matrix(
+  sqrt(1 / Matrix::diag(inp_black$W)),
+  nrow = n_tracts, ncol = S,
+  dimnames = list(common_geoids, colnames(Y_count))
+)
+
+# -- Total population and its SE (n x S), aligned to common_geoids ----------
+denom_mat    <- matrix(NA_real_, nrow = n_tracts, ncol = S,
+                       dimnames = list(common_geoids, colnames(Y_count)))
+SE_denom_mat <- denom_mat
+
+for (i in seq_len(S)) {
+  g_i <- rownames(total_list[[i]]$estimates)
+  idx <- match(common_geoids, g_i)
+  denom_mat[, i]    <- total_list[[i]]$estimates[idx, "total"]
+  SE_denom_mat[, i] <- total_list[[i]]$se[idx, "total"]
+}
+
+# -- Proportion: P = NH Black / Total ---------------------------------------
+Y_prop <- Y_count / denom_mat
+
+# -- SE of proportion (ACS ratio formula) ------------------------------------
+SE_prop <- matrix(NA_real_, nrow = n_tracts, ncol = S,
+                  dimnames = dimnames(Y_prop))
+
+for (i in seq_len(S)) {
+  N    <- denom_mat[, i]
+  p    <- Y_prop[, i]
+  se_x <- SE_count[, i]
+  se_n <- SE_denom_mat[, i]
+
+  disc        <- se_x^2 - p^2 * se_n^2
+  SE_prop[, i] <- ifelse(
+    !is.na(disc) & disc >= 0,
+    sqrt(disc)                      / N,   # standard ACS ratio formula
+    sqrt(se_x^2 + p^2 * se_n^2)    / N    # fallback (sum form)
+  )
+}
+
+# Guard: set SE to NA where total is zero or missing
+SE_prop[is.na(denom_mat) | denom_mat == 0] <- NA_real_
+
+cat("Y_prop range  :", round(range(Y_prop, na.rm = TRUE), 3), "\n")
+cat("SE_prop range :", round(range(SE_prop, na.rm = TRUE), 5), "\n")
+
+# Precision weight matrix (NA SEs produce W=0, excluding from WLS)
+W_prop <- build_precision_weights(SE_prop)
+cat("W diagonal range:", round(range(Matrix::diag(W_prop)), 1), "\n")
+```
+
+# Solve the Deconvolution
+
+Proportions live on $[0, 1]$, so $\lambda$ values are much smaller than for
+dollar-denominated income.  We use $\lambda_t = 1$ and $\lambda_s = 0.1$.
+
+> **Note:** With ~1,300 Cook County tracts the one-time Cholesky factorisation
+> in `$setup()` may take 1–2 minutes.
+
+```{r solve, cache=TRUE}
+X_hat <- solve_deconv(
+  Y        = Y_prop,
+  M        = inp_black$M,
+  W        = W_prop,
+  D        = inp_black$D,
+  Ls       = inp_black$Ls,
+  lambda_t = 1,
+  lambda_s = 0.1,
+  rho      = 1.0,
+  max_iter = 5000,
+  verbose  = TRUE
+)
+
+# Clip to [0, 1]: proportions must be bounded
+X_hat <- pmax(pmin(X_hat, 1), 0)
+
+cat("Recovered dimensions:", nrow(X_hat), "tracts x", ncol(X_hat), "years\n")
+cat("X_hat range:", round(range(X_hat, na.rm = TRUE), 3), "\n")
+cat("Latent years:",
+    inp_black$metadata$first_latent_year, "–",
+    inp_black$metadata$last_latent_year, "\n")
+```
+
+## Convergence diagnostic
+
+```{r solver-diagnostics, fig.height=4}
+solver <- solve_deconv(
+  Y             = Y_prop,
+  M             = inp_black$M,
+  W             = W_prop,
+  D             = inp_black$D,
+  Ls            = inp_black$Ls,
+  lambda_t      = 1,
+  lambda_s      = 0.1,
+  rho           = 1.0,
+  max_iter      = 5000,
+  return_solver = TRUE
+)
+solver$print()
+
+ggplot(solver$history, aes(x = iter)) +
+  geom_line(aes(y = r_primal, colour = "Primal residual")) +
+  geom_line(aes(y = r_dual,   colour = "Dual residual")) +
+  scale_y_log10() +
+  scale_colour_manual(
+    values = c("Primal residual" = "#2c7bb6", "Dual residual" = "#d7191c"),
+    name   = NULL
+  ) +
+  labs(title = "ADMM convergence",
+       x = "Iteration", y = "Residual norm (log scale)") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+```
+
+# Results
+
+## Long-format data frame
+
+```{r tidy-results}
+latent_years <- inp_black$metadata$first_latent_year:inp_black$metadata$last_latent_year
+
+X_long <- as.data.frame(X_hat)
+colnames(X_long) <- as.character(latent_years)
+X_long$GEOID     <- rownames(X_hat)
+
+X_long <- tidyr::pivot_longer(
+  X_long,
+  cols      = -GEOID,
+  names_to  = "year",
+  values_to = "prop_black_hat"
+)
+X_long$year <- as.integer(X_long$year)
+```
+
+## Time series: selected tracts
+
+```{r time-series, fig.height=5}
+# Observed proportions in long format
+Y_long <- as.data.frame(Y_prop)
+colnames(Y_long) <- as.character(year_ends)
+Y_long$GEOID     <- rownames(Y_prop)
+
+Y_long <- tidyr::pivot_longer(
+  Y_long,
+  cols      = -GEOID,
+  names_to  = "year_end",
+  values_to = "prop_obs"
+)
+Y_long$year_end <- as.integer(Y_long$year_end)
+
+# Select 5 representative tracts spanning the NH Black share distribution
+mean_prop  <- rowMeans(Y_prop, na.rm = TRUE)
+sel_geoids <- names(sort(mean_prop))[
+  round(seq(1, sum(!is.na(mean_prop)), length.out = 5))
+]
+
+X_sel <- X_long[X_long$GEOID %in% sel_geoids, ]
+Y_sel <- Y_long[Y_long$GEOID %in% sel_geoids, ]
+
+ggplot() +
+  geom_segment(
+    data = Y_sel,
+    aes(x = year_end - 4, xend = year_end,
+        y = prop_obs, yend = prop_obs, colour = GEOID),
+    linewidth = 2.5, alpha = 0.4
+  ) +
+  geom_line(
+    data = X_sel,
+    aes(x = year, y = prop_black_hat, colour = GEOID),
+    linewidth = 0.8
+  ) +
+  geom_point(
+    data = X_sel,
+    aes(x = year, y = prop_black_hat, colour = GEOID),
+    size = 2
+  ) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  scale_x_continuous(breaks = latent_years) +
+  labs(
+    title    = "Recovered annual vs. observed 5-year NH Black population share",
+    subtitle = "Thick segments = ACS 5-year observed windows; lines = recovered annual signal",
+    x = "Year", y = "NH Black share",
+    colour = "Census tract (GEOID)"
+  ) +
+  theme_bw() +
+  theme(legend.position = "bottom",
+        axis.text.x     = element_text(angle = 45, hjust = 1),
+        legend.text     = element_text(size = 7))
+```
+
+## Spatial maps: recovered share by year
+
+```{r maps, fig.height=8}
+tracts_sf <- tidycensus::get_acs(
+  geography = "tract",
+  variables = "B03002_001",
+  state     = "IL",
+  county    = "Cook",
+  year      = 2022,
+  survey    = "acs5",
+  geometry  = TRUE
+) |>
+  dplyr::select(GEOID, geometry) |>
+  dplyr::distinct(GEOID, .keep_all = TRUE)
+
+years_to_map <- c(2014, 2016, 2018, 2020, 2022)
+
+map_df <- X_long |>
+  dplyr::filter(year %in% years_to_map) |>
+  dplyr::left_join(tracts_sf, by = "GEOID") |>
+  sf::st_as_sf()
+
+ggplot(map_df) +
+  geom_sf(aes(fill = prop_black_hat), colour = NA) +
+  facet_wrap(~ year, ncol = 3) +
+  scale_fill_viridis_c(
+    option   = "magma", direction = -1,
+    name     = "NH Black\nshare",
+    labels   = scales::percent_format(accuracy = 1),
+    na.value = "grey80"
+  ) +
+  labs(
+    title    = "Recovered annual NH Black population share — Cook County tracts",
+    subtitle = paste0("TWDeConv  |  \u03bb_t = 1,  \u03bb_s = 0.1  |  Latent years ",
+                      min(latent_years), "\u2013", max(latent_years))
+  ) +
+  theme_void() +
+  theme(
+    strip.text      = element_text(face = "bold", size = 10),
+    legend.position = "right",
+    plot.title      = element_text(face = "bold"),
+    plot.subtitle   = element_text(colour = "grey40", size = 9)
+  )
+```
+
+# Validation: Comparison with 2020 Decennial Census
+
+## Why the Decennial Census works here
+
+Unlike income (which the Decennial does not collect), **racial composition is
+measured by the Decennial Census** as a full enumeration with no sampling
+error.  The 2020 PL 94-171 redistricting file provides:
+
+| Variable | Description |
+|----------|-------------|
+| `P2_001N` | Total population |
+| `P2_006N` | Not Hispanic or Latino: Black or African American alone |
+
+Two caveats apply:
+
+1. **Timing**: the Decennial is a single-day snapshot (April 1, 2020); the
+   deconvolved estimate represents an annual average.  In rapidly changing
+   tracts these may differ.
+2. **Mode effects**: mail/online survey (ACS) vs. enumerator (Decennial) can
+   produce small differences in self-reported race.
+
+## Fetch Decennial 2020 tract data
+
+```{r decennial-2020, cache=TRUE}
+dec_raw <- tidycensus::get_decennial(
+  geography = "tract",
+  variables = c(total    = "P2_001N",
+                black_nh = "P2_006N"),
+  state     = "IL",
+  county    = "Cook",
+  year      = 2020,
+  sumfile   = "pl"
+)
+
+dec_2020 <- dec_raw |>
+  dplyr::select(GEOID, variable, value) |>
+  tidyr::pivot_wider(names_from = variable, values_from = value) |>
+  dplyr::mutate(
+    prop_black_dec = dplyr::if_else(total > 0, black_nh / total, NA_real_)
+  )
+
+cat("Decennial tracts:", nrow(dec_2020), "\n")
+cat("Proportion range:", round(range(dec_2020$prop_black_dec, na.rm = TRUE), 3), "\n")
+```
+
+## Agreement statistics
+
+```{r comparison}
+comp_df <- X_long |>
+  dplyr::filter(year == 2020) |>
+  dplyr::inner_join(dec_2020, by = "GEOID") |>
+  dplyr::filter(!is.na(prop_black_hat), !is.na(prop_black_dec))
+
+rmse <- sqrt(mean((comp_df$prop_black_hat - comp_df$prop_black_dec)^2))
+mae  <- mean(abs(comp_df$prop_black_hat  - comp_df$prop_black_dec))
+bias <- mean(comp_df$prop_black_hat      - comp_df$prop_black_dec)
+r    <- cor(comp_df$prop_black_hat, comp_df$prop_black_dec)
+
+cat("=== TWDeConv 2020 vs. Decennial 2020 (Cook County tracts) ===\n")
+cat(sprintf("  Tracts compared : %d\n",      nrow(comp_df)))
+cat(sprintf("  Pearson r       : %.4f\n",    r))
+cat(sprintf("  RMSE            : %.4f  (%.1f pct pts)\n", rmse, rmse * 100))
+cat(sprintf("  MAE             : %.4f  (%.1f pct pts)\n", mae,  mae  * 100))
+cat(sprintf("  Mean bias       : %+.4f (%+.1f pct pts)\n", bias, bias * 100))
+```
+
+## Scatter plot: TWDeConv vs. Decennial
+
+```{r scatter, fig.height=5}
+ggplot(comp_df, aes(x = prop_black_dec, y = prop_black_hat)) +
+  geom_point(alpha = 0.35, size = 1.2, colour = "#2c7bb6") +
+  geom_abline(slope = 1, intercept = 0,
+              colour = "black", linetype = "dashed", linewidth = 0.7) +
+  geom_smooth(method = "lm", colour = "#d7191c",
+              se = FALSE, linewidth = 0.9) +
+  scale_x_continuous(labels = scales::percent_format(accuracy = 1),
+                     limits = c(0, 1)) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1),
+                     limits = c(0, 1)) +
+  annotate("text", x = 0.05, y = 0.92, hjust = 0, size = 3.8,
+           label = sprintf("r = %.3f\nRMSE = %.1f pct pts\nBias = %+.1f pct pts",
+                           r, rmse * 100, bias * 100)) +
+  labs(
+    title    = "Deconvolved 2020 NH Black share vs. 2020 Decennial Census",
+    subtitle = "Dashed = perfect agreement  |  Red = OLS fit  |  Each point = one Census tract",
+    x        = "Decennial Census 2020 (full count)",
+    y        = "TWDeConv deconvolved 2020"
+  ) +
+  theme_bw()
+```
+
+## Side-by-side maps: TWDeConv 2020 vs. Decennial 2020
+
+```{r map-comparison, fig.height=6}
+map_comp <- comp_df |>
+  dplyr::select(GEOID, prop_black_hat, prop_black_dec) |>
+  dplyr::left_join(tracts_sf, by = "GEOID") |>
+  sf::st_as_sf() |>
+  tidyr::pivot_longer(
+    cols      = c(prop_black_hat, prop_black_dec),
+    names_to  = "source",
+    values_to = "prop_black"
+  ) |>
+  dplyr::mutate(source = dplyr::recode(source,
+    prop_black_hat = "TWDeConv 2020",
+    prop_black_dec = "Decennial Census 2020"
+  ))
+
+ggplot(map_comp) +
+  geom_sf(aes(fill = prop_black), colour = NA) +
+  facet_wrap(~ source) +
+  scale_fill_viridis_c(
+    option   = "magma", direction = -1,
+    name     = "NH Black\nshare",
+    labels   = scales::percent_format(accuracy = 1),
+    na.value = "grey80"
+  ) +
+  labs(
+    title    = "NH Black population share: TWDeConv 2020 vs. Decennial Census 2020",
+    subtitle = "Cook County Census tracts"
+  ) +
+  theme_void() +
+  theme(
+    strip.text      = element_text(face = "bold", size = 11),
+    legend.position = "right",
+    plot.title      = element_text(face = "bold")
+  )
+```
+
+## Residual map: TWDeConv − Decennial
+
+```{r map-residual, fig.height=5}
+map_resid <- comp_df |>
+  dplyr::mutate(resid = prop_black_hat - prop_black_dec) |>
+  dplyr::left_join(tracts_sf, by = "GEOID") |>
+  sf::st_as_sf()
+
+lim <- max(abs(map_resid$resid), na.rm = TRUE)
+
+ggplot(map_resid) +
+  geom_sf(aes(fill = resid), colour = NA) +
+  scale_fill_distiller(
+    palette  = "RdBu",
+    limits   = c(-lim, lim),
+    name     = "TWDeConv \u2212\nDecennial",
+    labels   = scales::percent_format(accuracy = 1)
+  ) +
+  labs(
+    title    = "Residual: TWDeConv 2020 minus Decennial 2020 NH Black share",
+    subtitle = "Blue = underestimate; Red = overestimate"
+  ) +
+  theme_void() +
+  theme(
+    legend.position = "right",
+    plot.title      = element_text(face = "bold"),
+    plot.subtitle   = element_text(colour = "grey40", size = 9)
+  )
+```
+
+# Session Info
+
+```{r session-info}
+sessionInfo()
+```
