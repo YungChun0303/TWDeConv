@@ -154,6 +154,23 @@
   df
 }
 
+#' Fetch geometry via tigris for a given geography
+#' Returns an sf object or NULL on failure.
+#' @noRd
+.fetch_tigris_geometry <- function(geography, state_fips, county_fips, year) {
+  if (!requireNamespace("tigris", quietly = TRUE)) return(NULL)
+  switch(geography,
+    "tract"       = tigris::tracts(
+                      state = state_fips, county = county_fips, year = year),
+    "block group" = tigris::block_groups(
+                      state = state_fips, county = county_fips, year = year),
+    "county"      = tigris::counties(state = state_fips, year = year),
+    "zcta"        = tigris::zctas(year = year),
+    stop("tigris geometry fallback not implemented for geography = '",
+         geography, "'")
+  )
+}
+
 #' Find the GEOID column in a VRE data.frame
 #' Census VRE files use various names: GEO_ID, GEOID, geo_id, etc.
 #' @noRd
@@ -460,51 +477,22 @@ fetch_acs_vre_data <- function(state,
     message(sprintf("Fetching ACS 5-year %s | geography=%s | state=%s | %d variable(s)...",
                     year_range, geography, state, length(variables)))
 
-  # -- 2. Fetch point estimates -------------------------------------------
-  # Try with geometry=TRUE when requested; fall back to FALSE on any error
-  # (some tidycensus versions have issues with output="wide" + geometry=TRUE)
-  acs_raw <- NULL
-
-  if (geometry) {
-    acs_raw <- tryCatch(
-      tidycensus::get_acs(
-        geography = geography,
-        variables = named_vars,
-        state     = state_fips,
-        county    = county_fips,
-        year      = year_end,
-        survey    = "acs5",
-        output    = "wide",
-        geometry  = TRUE,
-        moe_level = moe_level,
-        quiet     = quiet
-      ),
-      error = function(e) {
-        if (!quiet)
-          message("  Geometry download failed; retrying without geometry. ",
-                  "Error: ", conditionMessage(e))
-        NULL
-      }
-    )
-  }
-
-  if (is.null(acs_raw)) {
-    acs_raw <- tryCatch(
-      tidycensus::get_acs(
-        geography = geography,
-        variables = named_vars,
-        state     = state_fips,
-        county    = county_fips,
-        year      = year_end,
-        survey    = "acs5",
-        output    = "wide",
-        geometry  = FALSE,
-        moe_level = moe_level,
-        quiet     = quiet
-      ),
-      error = function(e) stop("get_acs() failed: ", conditionMessage(e))
-    )
-  }
+  # -- 2. Fetch point estimates (always without geometry for reliability) ------
+  acs_raw <- tryCatch(
+    tidycensus::get_acs(
+      geography = geography,
+      variables = named_vars,
+      state     = state_fips,
+      county    = county_fips,
+      year      = year_end,
+      survey    = "acs5",
+      output    = "wide",
+      geometry  = FALSE,
+      moe_level = moe_level,
+      quiet     = quiet
+    ),
+    error = function(e) stop("get_acs() failed: ", conditionMessage(e))
+  )
 
   n_units <- nrow(acs_raw)
   if (!quiet) message(sprintf("  Retrieved %d %s(s).", n_units, geography))
@@ -612,6 +600,44 @@ fetch_acs_vre_data <- function(state,
     }
   }
 
+  # -- 4b. Fetch geometry separately (when requested) ----------------------
+  # Tries tidycensus first, then tigris (which uses a local cache).
+  geom_sf <- NULL
+  if (geometry) {
+    # Attempt 1: tidycensus
+    geom_sf <- tryCatch(
+      tidycensus::get_acs(
+        geography = geography,
+        variables = named_vars[1L],
+        state     = state_fips,
+        county    = county_fips,
+        year      = year_end,
+        survey    = "acs5",
+        geometry  = TRUE,
+        quiet     = quiet
+      ),
+      error = function(e) {
+        if (!quiet)
+          message("  tidycensus geometry failed; trying tigris cache. ",
+                  "Error: ", conditionMessage(e))
+        NULL
+      }
+    )
+    # Attempt 2: tigris (has its own local cache via options(tigris_use_cache))
+    if (is.null(geom_sf)) {
+      geom_sf <- tryCatch(
+        .fetch_tigris_geometry(geography, state_fips, county_fips, year_end),
+        error = function(e) {
+          if (!quiet)
+            message("  tigris geometry also failed. Error: ", conditionMessage(e))
+          NULL
+        }
+      )
+    }
+    if (is.null(geom_sf) && !quiet)
+      message("  Geometry unavailable; $sf will be a plain data.frame.")
+  }
+
   # -- 5. Augment sf with SE (and replicate columns) ---------------
   se_df           <- as.data.frame(se_mat)
   names(se_df)    <- paste0(var_names, "_se")
@@ -623,6 +649,16 @@ fetch_acs_vre_data <- function(state,
       names(rep_df) <- paste0(var_names[j], "_R", seq_len(80L))
       acs_out       <- cbind(acs_out, rep_df)
     }
+  }
+
+  # Attach geometry if available (makes acs_out an sf object)
+  if (!is.null(geom_sf) && inherits(geom_sf, "sf")) {
+    idx     <- match(acs_out$GEOID, geom_sf$GEOID)
+    acs_out <- sf::st_sf(
+      acs_out,
+      geometry = sf::st_geometry(geom_sf)[idx],
+      crs      = sf::st_crs(geom_sf)
+    )
   }
 
   # -- 6. Assemble output ------------------------------------------
