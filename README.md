@@ -17,7 +17,7 @@ The package recovers the unobserved latent annual signal ($X$) by solving a sing
 2. Temporal Smoothness: It applies a *k*-th order trend-filtering penalty ($\mathbf{D}$) to capture structured paths and identify sudden "level shifts" or changing trends.
 3. Spatial Continuity: It utilizes a spatial graph Laplacian ($L_s$) to penalize divergence between adjacent Census tracts, allowing the model to "borrow strength" across space.
 
-The model is solved using the Alternating Direction Method of Multipliers (ADMM), which is the industry standard for handling non-differentiable ($L_1$) penalties while maintaining computational efficiency for large-scale national data
+The model is solved using the **Alternating Direction Method of Multipliers (ADMM)**, which is the industry standard for handling non-differentiable ($L_1$) penalties while maintaining computational efficiency for large-scale national data
 
 
 ## How it works
@@ -36,6 +36,36 @@ $$\min_{X} \;\tfrac{1}{2}\| W^{1/2}(\text{vec}(Y) - (I_n \otimes M)\text{vec}(X^
 - **W** — diagonal precision matrix (inverse ACS sampling variances)
 - **D** — *k*-th order temporal difference matrix (trend-filtering penalty)
 - **L_s** — spatial graph Laplacian (contiguity-based smoothness penalty)
+
+## Key Package Modules and Commands
+The package is organized into specialized modules that handle everything from data ingestion to advanced optimization.
+1. ACS Data Ingestion and Precision Modeling
+These commands implement the project's requirement for "exact" margins of error and precision-weighted least squares.
+- `fetch_acs_vre_data()`: Pulls the 80 separate variance replicates from Variance Replicate Estimate (VRE) tables.
+- `compute_sdr_se()`: Uses Successive Difference Replication (SDR) to calculate official-standard standard errors that account for complex survey designs.
+- `build_acs_precision_weights()`: Constructs the diagonal precision matrix (W) used in the objective function to ensure higher-quality estimates have more influence.
+- ** prep_acs_for_deconv() **: A preprocessing tool that includes a tigris fallback to ensure spatial geometry is correctly assigned to the data even if metadata is missing.
+2. Matrix Construction and Penalties
+These functions build the operators required for the Kronecker-structured formulation.
+build_temporal_penalty(): Generates the k-th order discrete difference matrix (D) for trend filtering.
+build_spatial_laplacian(): Constructs a contiguity-based smoothness penalty based on the spatial network of Census units.
+build_acs_convolution_matrix(): Encodes the 5-year moving average process (matrix M) that links latent annual values to observed data.
+3. The ADMM Solver
+This is the "engine room" of the package, fulfilling the strategic roadmap’s call for a scalable solver.
+ADMMSolver: A class-based implementation of the ADMM algorithm designed to decouple data-fidelity and penalty terms.
+solve_deconv(): The primary user-facing command that executes the deconvolution and returns the recovered latent annual signal.
+4. Simulation and Validation Suite
+Because tract-level annual "ground truth" is often unavailable, these commands allow researchers to test the model on synthetic data.
+SyntheticDataGenerator: Creates known annual signals for benchmarking.
+run_simulation_suite(): Automates the testing of the model against synthetic datasets using metrics like RMSE and Lin’s CCC.
+plot_lambda_heatmap(): Assists in hyperparameter tuning by visualizing how different values of λ 
+t
+​
+  (temporal) and λ 
+s
+​
+  (spatial) affect recovery accuracy.
+This structured implementation allows the TWDeConv package to scale to the massive geographic resolution of the entire United States while maintaining the inferential rigor required for social policy research
 
 ## Installation
 
