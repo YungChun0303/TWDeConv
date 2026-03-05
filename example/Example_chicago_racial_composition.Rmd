@@ -62,6 +62,7 @@ problem than the St. Louis City income example.
 ```{r packages}
 library(TWDeConv)
 library(ggplot2)
+library(patchwork)
 library(sf)
 library(Matrix)
 
@@ -76,10 +77,10 @@ options(tigris_use_cache = TRUE)
 
 # Fetch and Prepare ACS Data
 
-We use five consecutive ACS 5-year windows (end years 2018–2022):
+We use five consecutive ACS 5-year windows (end years 2020–2024):
 
 - $S = 5$ observed windows
-- $T = S + 4 = 9$ latent annual time points (2014–2022)
+- $T = S + 4 = 9$ latent annual time points (2016–2024)
 
 ## Step 1: Structural matrices from NH Black counts
 
@@ -88,8 +89,8 @@ obtain the five structural matrices ($Y$, $M$, $W$, $D$, $L_s$) and the
 aligned GEOID set.  We will replace $Y$ and $W$ with proportion-based
 counterparts in Step 2.
 
-```{r fetch-black, cache=TRUE}
-year_ends <- 2018:2022
+```{r fetch-black, cache=TRUE, message=FALSE}
+year_ends <- 2020:2024
 S         <- length(year_ends)
 
 inp_black <- prep_acs_for_deconv(
@@ -323,7 +324,7 @@ ggplot() +
 
 ## Spatial maps: recovered share by year
 
-```{r maps, fig.height=8}
+```{r maps, fig.height=8, message=FALSE}
 tracts_sf <- tidycensus::get_acs(
   geography = "tract",
   variables = "B03002_001",
@@ -335,8 +336,10 @@ tracts_sf <- tidycensus::get_acs(
 ) |>
   dplyr::select(GEOID, geometry) |>
   dplyr::distinct(GEOID, .keep_all = TRUE)
+```
 
-years_to_map <- c(2014, 2016, 2018, 2020, 2022)
+```{r}
+years_to_map <- c(2016, 2018, 2020, 2022, 2024)
 
 map_df <- X_long |>
   dplyr::filter(year %in% years_to_map) |>
@@ -366,7 +369,7 @@ ggplot(map_df) +
   )
 ```
 
-# Validation: Comparison with 2020 Decennial Census
+# Validation: Three-Way Comparison with 2020 Decennial Census
 
 ## Why the Decennial Census works here
 
@@ -386,6 +389,13 @@ Two caveats apply:
    tracts these may differ.
 2. **Mode effects**: mail/online survey (ACS) vs. enumerator (Decennial) can
    produce small differences in self-reported race.
+
+We make **two comparisons** against the Decennial 2020 as ground truth:
+
+- **Comparison A — ACS 2018–2022 (naive)**: the single conventional 5-year
+  window that a researcher would use for "circa 2020" estimates.
+- **Comparison B — TWDeConv 2020 (deconvolved)**: the annual signal recovered
+  from five overlapping windows (end years 2020–2024).
 
 ## Fetch Decennial 2020 tract data
 
@@ -411,72 +421,152 @@ cat("Decennial tracts:", nrow(dec_2020), "\n")
 cat("Proportion range:", round(range(dec_2020$prop_black_dec, na.rm = TRUE), 3), "\n")
 ```
 
+## Fetch ACS 2018–2022 naive estimate
+
+The ACS 2018–2022 5-year estimate (window ending in 2022) is the conventional
+single-snapshot that most researchers would use for the year 2020.
+
+```{r acs-naive, cache=TRUE}
+acs_black_22 <- fetch_acs_vre_data(
+  state     = "IL",
+  county    = "Cook",
+  year_end  = 2022,
+  variables = c(black_nh = "B03002_004"),
+  geometry  = FALSE,
+  vre       = FALSE,
+  cache_dir = "~/acs_cache",
+  quiet     = TRUE
+)
+
+acs_total_22 <- fetch_acs_vre_data(
+  state     = "IL",
+  county    = "Cook",
+  year_end  = 2022,
+  variables = c(total = "B03002_001"),
+  geometry  = FALSE,
+  vre       = FALSE,
+  cache_dir = "~/acs_cache",
+  quiet     = TRUE
+)
+
+g22          <- intersect(rownames(acs_black_22$estimates), rownames(acs_total_22$estimates))
+acs_naive_df <- data.frame(
+  GEOID          = g22,
+  prop_black_acs = acs_black_22$estimates[g22, "black_nh"] /
+                   acs_total_22$estimates[g22, "total"],
+  stringsAsFactors = FALSE
+)
+
+cat("ACS 2018-2022 tracts:", nrow(acs_naive_df), "\n")
+cat("Proportion range:", round(range(acs_naive_df$prop_black_acs, na.rm = TRUE), 3), "\n")
+```
+
 ## Agreement statistics
 
 ```{r comparison}
-comp_df <- X_long |>
+twdeconv_2020 <- X_long |>
   dplyr::filter(year == 2020) |>
+  dplyr::select(GEOID, prop_black_hat)
+
+# Comparison A: ACS 2018-2022 vs. Decennial 2020
+comp_acs <- acs_naive_df |>
+  dplyr::inner_join(dec_2020, by = "GEOID") |>
+  dplyr::filter(!is.na(prop_black_acs), !is.na(prop_black_dec))
+
+rmse_acs <- sqrt(mean((comp_acs$prop_black_acs - comp_acs$prop_black_dec)^2))
+mae_acs  <- mean(abs(comp_acs$prop_black_acs   - comp_acs$prop_black_dec))
+bias_acs <- mean(comp_acs$prop_black_acs        - comp_acs$prop_black_dec)
+r_acs    <- cor(comp_acs$prop_black_acs, comp_acs$prop_black_dec)
+
+# Comparison B: TWDeConv 2020 vs. Decennial 2020
+comp_tw <- twdeconv_2020 |>
   dplyr::inner_join(dec_2020, by = "GEOID") |>
   dplyr::filter(!is.na(prop_black_hat), !is.na(prop_black_dec))
 
-rmse <- sqrt(mean((comp_df$prop_black_hat - comp_df$prop_black_dec)^2))
-mae  <- mean(abs(comp_df$prop_black_hat  - comp_df$prop_black_dec))
-bias <- mean(comp_df$prop_black_hat      - comp_df$prop_black_dec)
-r    <- cor(comp_df$prop_black_hat, comp_df$prop_black_dec)
+rmse_tw <- sqrt(mean((comp_tw$prop_black_hat - comp_tw$prop_black_dec)^2))
+mae_tw  <- mean(abs(comp_tw$prop_black_hat   - comp_tw$prop_black_dec))
+bias_tw <- mean(comp_tw$prop_black_hat        - comp_tw$prop_black_dec)
+r_tw    <- cor(comp_tw$prop_black_hat, comp_tw$prop_black_dec)
 
-cat("=== TWDeConv 2020 vs. Decennial 2020 (Cook County tracts) ===\n")
-cat(sprintf("  Tracts compared : %d\n",      nrow(comp_df)))
-cat(sprintf("  Pearson r       : %.4f\n",    r))
-cat(sprintf("  RMSE            : %.4f  (%.1f pct pts)\n", rmse, rmse * 100))
-cat(sprintf("  MAE             : %.4f  (%.1f pct pts)\n", mae,  mae  * 100))
-cat(sprintf("  Mean bias       : %+.4f (%+.1f pct pts)\n", bias, bias * 100))
+# Summary table
+stats_tbl <- data.frame(
+  Method           = c("ACS 2018-2022 (naive)", "TWDeConv 2020"),
+  Tracts           = c(nrow(comp_acs), nrow(comp_tw)),
+  r                = round(c(r_acs,    r_tw),    4),
+  `RMSE (pct pts)` = round(c(rmse_acs, rmse_tw) * 100, 2),
+  `MAE (pct pts)`  = round(c(mae_acs,  mae_tw)  * 100, 2),
+  `Bias (pct pts)` = round(c(bias_acs, bias_tw) * 100, 2),
+  check.names      = FALSE
+)
+
+knitr::kable(stats_tbl,
+             caption = "Agreement with 2020 Decennial Census: NH Black population share")
 ```
 
-## Scatter plot: TWDeConv vs. Decennial
+## Scatter plots: ACS 2018–2022 and TWDeConv 2020 vs. Decennial 2020
 
-```{r scatter, fig.height=5}
-ggplot(comp_df, aes(x = prop_black_dec, y = prop_black_hat)) +
-  geom_point(alpha = 0.35, size = 1.2, colour = "#2c7bb6") +
-  geom_abline(slope = 1, intercept = 0,
-              colour = "black", linetype = "dashed", linewidth = 0.7) +
-  geom_smooth(method = "lm", colour = "#d7191c",
-              se = FALSE, linewidth = 0.9) +
-  scale_x_continuous(labels = scales::percent_format(accuracy = 1),
-                     limits = c(0, 1)) +
-  scale_y_continuous(labels = scales::percent_format(accuracy = 1),
-                     limits = c(0, 1)) +
-  annotate("text", x = 0.05, y = 0.92, hjust = 0, size = 3.8,
+```{r scatter, fig.height=5, fig.width=11}
+p_acs <- ggplot(comp_acs, aes(x = prop_black_dec, y = prop_black_acs)) +
+  geom_point(alpha = 0.3, size = 1, colour = "#e08214") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", linewidth = 0.7) +
+  geom_smooth(method = "lm", colour = "#b2182b", se = FALSE, linewidth = 0.9) +
+  scale_x_continuous(labels = scales::percent_format(accuracy = 1), limits = c(0, 1)) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1), limits = c(0, 1)) +
+  annotate("text", x = 0.04, y = 0.92, hjust = 0, size = 3.5,
            label = sprintf("r = %.3f\nRMSE = %.1f pct pts\nBias = %+.1f pct pts",
-                           r, rmse * 100, bias * 100)) +
-  labs(
-    title    = "Deconvolved 2020 NH Black share vs. 2020 Decennial Census",
-    subtitle = "Dashed = perfect agreement  |  Red = OLS fit  |  Each point = one Census tract",
-    x        = "Decennial Census 2020 (full count)",
-    y        = "TWDeConv deconvolved 2020"
-  ) +
+                           r_acs, rmse_acs * 100, bias_acs * 100)) +
+  labs(title = "A: ACS 2018-2022 vs. Decennial 2020",
+       subtitle = "Conventional naive estimate",
+       x = "Decennial Census 2020 (full count)",
+       y = "ACS 2018-2022 (5-year estimate)") +
   theme_bw()
+
+p_tw <- ggplot(comp_tw, aes(x = prop_black_dec, y = prop_black_hat)) +
+  geom_point(alpha = 0.3, size = 1, colour = "#2c7bb6") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", linewidth = 0.7) +
+  geom_smooth(method = "lm", colour = "#d7191c", se = FALSE, linewidth = 0.9) +
+  scale_x_continuous(labels = scales::percent_format(accuracy = 1), limits = c(0, 1)) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1), limits = c(0, 1)) +
+  annotate("text", x = 0.04, y = 0.92, hjust = 0, size = 3.5,
+           label = sprintf("r = %.3f\nRMSE = %.1f pct pts\nBias = %+.1f pct pts",
+                           r_tw, rmse_tw * 100, bias_tw * 100)) +
+  labs(title = "B: TWDeConv 2020 vs. Decennial 2020",
+       subtitle = "Deconvolved from windows 2020-2024",
+       x = "Decennial Census 2020 (full count)",
+       y = "TWDeConv deconvolved 2020") +
+  theme_bw()
+
+patchwork::wrap_plots(p_acs, p_tw, nrow = 1)
 ```
 
-## Side-by-side maps: TWDeConv 2020 vs. Decennial 2020
+## Three-way spatial maps
 
-```{r map-comparison, fig.height=6}
-map_comp <- comp_df |>
-  dplyr::select(GEOID, prop_black_hat, prop_black_dec) |>
+```{r map-threeway, fig.height=6, fig.width=11}
+map_threeway <- dec_2020 |>
+  dplyr::select(GEOID, prop_black_dec) |>
+  dplyr::left_join(acs_naive_df, by = "GEOID") |>
+  dplyr::left_join(twdeconv_2020, by = "GEOID") |>
   dplyr::left_join(tracts_sf, by = "GEOID") |>
   sf::st_as_sf() |>
   tidyr::pivot_longer(
-    cols      = c(prop_black_hat, prop_black_dec),
+    cols      = c(prop_black_dec, prop_black_acs, prop_black_hat),
     names_to  = "source",
     values_to = "prop_black"
   ) |>
-  dplyr::mutate(source = dplyr::recode(source,
-    prop_black_hat = "TWDeConv 2020",
-    prop_black_dec = "Decennial Census 2020"
+  dplyr::mutate(source = factor(
+    dplyr::recode(source,
+      prop_black_dec = "Decennial 2020\n(full count)",
+      prop_black_acs = "ACS 2018-2022\n(5-year naive)",
+      prop_black_hat = "TWDeConv 2020\n(deconvolved)"
+    ),
+    levels = c("Decennial 2020\n(full count)",
+               "ACS 2018-2022\n(5-year naive)",
+               "TWDeConv 2020\n(deconvolved)")
   ))
 
-ggplot(map_comp) +
+ggplot(map_threeway) +
   geom_sf(aes(fill = prop_black), colour = NA) +
-  facet_wrap(~ source) +
+  facet_wrap(~ source, nrow = 1) +
   scale_fill_viridis_c(
     option   = "magma", direction = -1,
     name     = "NH Black\nshare",
@@ -484,41 +574,63 @@ ggplot(map_comp) +
     na.value = "grey80"
   ) +
   labs(
-    title    = "NH Black population share: TWDeConv 2020 vs. Decennial Census 2020",
-    subtitle = "Cook County Census tracts"
+    title    = "NH Black population share: three-way comparison",
+    subtitle = "Cook County Census tracts  |  Reference year: 2020"
   ) +
   theme_void() +
   theme(
-    strip.text      = element_text(face = "bold", size = 11),
+    strip.text      = element_text(face = "bold", size = 9),
     legend.position = "right",
-    plot.title      = element_text(face = "bold")
+    plot.title      = element_text(face = "bold"),
+    plot.subtitle   = element_text(colour = "grey40", size = 9)
   )
 ```
 
-## Residual map: TWDeConv − Decennial
+## Residual maps: ACS and TWDeConv vs. Decennial
 
-```{r map-residual, fig.height=5}
-map_resid <- comp_df |>
-  dplyr::mutate(resid = prop_black_hat - prop_black_dec) |>
+```{r map-residuals, fig.height=5, fig.width=11}
+map_resid_long <- dec_2020 |>
+  dplyr::select(GEOID, prop_black_dec) |>
+  dplyr::left_join(acs_naive_df, by = "GEOID") |>
+  dplyr::left_join(twdeconv_2020, by = "GEOID") |>
+  dplyr::mutate(
+    resid_acs = prop_black_acs - prop_black_dec,
+    resid_tw  = prop_black_hat - prop_black_dec
+  ) |>
   dplyr::left_join(tracts_sf, by = "GEOID") |>
-  sf::st_as_sf()
+  sf::st_as_sf() |>
+  tidyr::pivot_longer(
+    cols      = c(resid_acs, resid_tw),
+    names_to  = "method",
+    values_to = "residual"
+  ) |>
+  dplyr::mutate(method = factor(
+    dplyr::recode(method,
+      resid_acs = "ACS 2018-2022 \u2212 Decennial 2020",
+      resid_tw  = "TWDeConv 2020 \u2212 Decennial 2020"
+    ),
+    levels = c("ACS 2018-2022 \u2212 Decennial 2020",
+               "TWDeConv 2020 \u2212 Decennial 2020")
+  ))
 
-lim <- max(abs(map_resid$resid), na.rm = TRUE)
+lim <- max(abs(map_resid_long$residual), na.rm = TRUE)
 
-ggplot(map_resid) +
-  geom_sf(aes(fill = resid), colour = NA) +
+ggplot(map_resid_long) +
+  geom_sf(aes(fill = residual), colour = NA) +
+  facet_wrap(~ method, nrow = 1) +
   scale_fill_distiller(
     palette  = "RdBu",
     limits   = c(-lim, lim),
-    name     = "TWDeConv \u2212\nDecennial",
+    name     = "Estimate \u2212\nDecennial",
     labels   = scales::percent_format(accuracy = 1)
   ) +
   labs(
-    title    = "Residual: TWDeConv 2020 minus Decennial 2020 NH Black share",
-    subtitle = "Blue = underestimate; Red = overestimate"
+    title    = "Residuals vs. 2020 Decennial Census",
+    subtitle = "Blue = underestimate; Red = overestimate  |  Cook County Census tracts"
   ) +
   theme_void() +
   theme(
+    strip.text      = element_text(face = "bold", size = 9),
     legend.position = "right",
     plot.title      = element_text(face = "bold"),
     plot.subtitle   = element_text(colour = "grey40", size = 9)
