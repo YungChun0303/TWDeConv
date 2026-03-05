@@ -26,16 +26,20 @@ The ACS 5-year estimate for tract *i* and window ending in year *s* is (approxim
 
 $$Y_{is} = \frac{1}{5}\sum_{t=s-4}^{s} X_{it} + \varepsilon_{is}$$
 
-where **X** is the unobserved latent annual signal. **TWDeConv** recovers
-**X** by solving a Kronecker-structured spatio-temporal generalised lasso via
-ADMM:
+where **X** is the unobserved latent annual signal. 
 
-$$\min_{X} \;\tfrac{1}{2}\| W^{1/2}(\vec{Y}) - (I_n \otimes M)\vec{X^\top})\|_2^2 + \lambda_t \| (I_n \otimes D)\text{vec}(X^\top)\|_1 + \lambda_s \| (L_s \otimes I_T)\text{vec}(X^\top)\|_1$$
+**TWDeConv** recovers **X** by solving a Kronecker-structured spatio-temporal generalised lasso via ADMM:
 
-- **$M$** — S × T convolution matrix encoding the 5-year averaging
-- **$W$** — diagonal precision matrix (inverse ACS sampling variances)
-- **$D$** — *k*-th order temporal difference matrix (trend-filtering penalty)
-- **$L_s$** — spatial graph Laplacian (contiguity-based smoothness penalty)
+$$
+\hat{\mathbf{x}} = \arg\min_{\mathbf{x}} \left( \frac{1}{2} \|\mathbf{W}^{1/2}(\mathbf{Ax} - \mathbf{y})\|_2^2 + \lambda_1 R_t(\mathbf{x}) + \lambda_2 R_s(\mathbf{x}) \right)
+$$
+
+where,
+- $\mathbf{x}$: The latent annual estimates we are trying to recover.
+- $\mathbf{y}$: The observed ACS 5-year moving average estimates.
+- $\mathbf{A}$: The Convolution Matrix (created by build_acs_convolution_matrix()), which maps annual data to 5-year averages.
+- $\mathbf{W}$: The Precision Weight Matrix (created by build_acs_precision_weights()), where $w_i = 1/\sigma_i^2$.
+- $R_t(\mathbf{x})$ and $R_s(\mathbf{x})$: The Temporal and Spatial penalty terms (regularization) that ensure the results are smooth across time and geography.
 
 ## Key Package Modules and Commands
 The package is organized into specialized modules that handle everything from data ingestion to advanced optimization.
