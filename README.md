@@ -58,13 +58,8 @@ This is the "engine room" of the package, fulfilling the strategic roadmap’s c
 Because tract-level annual "ground truth" is often unavailable, these commands allow researchers to test the model on synthetic data.
 - `SyntheticDataGenerator`: Creates known annual signals for benchmarking.
 - `run_simulation_suite()`: Automates the testing of the model against synthetic datasets using metrics like RMSE and Lin’s CCC.
-- `plot_lambda_heatmap()`: Assists in hyperparameter tuning by visualizing how different values of λ 
-t
-​
-  (temporal) and λ 
-s
-​
-  (spatial) affect recovery accuracy.
+- `plot_lambda_heatmap()`: Assists in hyperparameter tuning by visualizing how different values of $\lambda_t$(temporal) and $\lambda_s$(spatial) affect recovery accuracy.
+
 This structured implementation allows the TWDeConv package to scale to the massive geographic resolution of the entire United States while maintaining the inferential rigor required for social policy research
 
 ## Installation
