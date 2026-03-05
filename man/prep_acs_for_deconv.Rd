@@ -9,6 +9,7 @@ prep_acs_for_deconv(
   county = NULL,
   year_ends,
   variables,
+  geography = "tract",
   k = 2L,
   queen = TRUE,
   vre = TRUE,
@@ -22,7 +23,8 @@ prep_acs_for_deconv(
 \item{state}{Character. State name, 2-letter abbreviation, or FIPS code.}
 
 \item{county}{Character or \code{NULL}. County name, partial name, or 3-digit
-FIPS. \code{NULL} retrieves all tracts in the state.}
+FIPS. \code{NULL} retrieves all units in the state. Ignored for
+\code{geography = "zcta"}.}
 
 \item{year_ends}{Integer vector of ACS window end-years (must be sorted
 ascending). Each entry corresponds to one ACS 5-year window
@@ -31,6 +33,11 @@ ascending). Each entry corresponds to one ACS 5-year window
 \item{variables}{Single ACS variable code (deconvolution is univariate per
 call), e.g. \code{"B19013_001"}. May be named.}
 
+\item{geography}{Character. Geographic unit passed to
+\code{\link[tidycensus:get_acs]{tidycensus::get_acs()}}.  Common values: \code{"tract"} (default),
+\code{"block group"}, \code{"county"}, \code{"zcta"}.  VRE-based SDR standard errors
+are only available for \code{"tract"}; all others fall back to MOE-derived SE.}
+
 \item{k}{Integer. Temporal difference order for the penalty matrix D.
 Default \code{2L}.}
 
@@ -38,7 +45,7 @@ Default \code{2L}.}
 Default \code{TRUE}.}
 
 \item{vre}{Logical. Attempt VRE download for SDR standard errors?
-Default \code{TRUE}.}
+Default \code{TRUE}. Automatically disabled for non-tract geographies.}
 
 \item{use_srvyr}{Reserved parameter (unused). Default \code{TRUE}.}
 
@@ -52,15 +59,16 @@ Default \code{tempdir()}.}
 \value{
 A named list of class \code{"DeconvInput"} with components:
 \describe{
-\item{\code{Y}}{n  x  S numeric matrix of ACS estimates (tracts  x  windows).}
+\item{\code{Y}}{n  x  S numeric matrix of ACS estimates (units  x  windows).}
 \item{\code{M}}{S  x  T sparse convolution matrix from
 \code{\link[=build_acs_convolution_matrix]{build_acs_convolution_matrix()}}.}
 \item{\code{W}}{(nS)  x  (nS) sparse diagonal precision weight matrix.}
 \item{\code{D}}{(T-k)  x  T sparse temporal difference matrix.}
 \item{\code{Ls}}{n  x  n sparse symmetric spatial Laplacian.}
-\item{\code{metadata}}{Named list: \code{state}, \code{county}, \code{year_ends},
-\code{variables}, \code{var_name}, \code{n_tracts}, \code{T_years}, \code{S_windows}, \code{k},
-\code{first_latent_year}, \code{last_latent_year}, \code{vre_sources}.}
+\item{\code{metadata}}{Named list: \code{state}, \code{county}, \code{geography},
+\code{year_ends}, \code{variables}, \code{var_name}, \code{n_units}, \code{T_years},
+\code{S_windows}, \code{k}, \code{first_latent_year}, \code{last_latent_year},
+\code{vre_sources}.}
 }
 }
 \description{

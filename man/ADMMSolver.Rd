@@ -122,6 +122,8 @@ Learning, 3(1), 1-122.
 
 \item{\code{.q_data}}{nT-vector \eqn{M^\top W y} (fixed data term in RHS).
 Populated by \verb{$setup()}.}
+
+\item{\code{.MtW}}{Cached M_kron^T W (nT x nS). Populated by \verb{$setup()}.}
 }
 \if{html}{\out{</div>}}
 }
@@ -130,6 +132,7 @@ Populated by \verb{$setup()}.}
 \itemize{
 \item \href{#method-ADMMSolver-new}{\code{ADMMSolver$new()}}
 \item \href{#method-ADMMSolver-setup}{\code{ADMMSolver$setup()}}
+\item \href{#method-ADMMSolver-reset_y}{\code{ADMMSolver$reset_y()}}
 \item \href{#method-ADMMSolver-run}{\code{ADMMSolver$run()}}
 \item \href{#method-ADMMSolver-compute_objective}{\code{ADMMSolver$compute_objective()}}
 \item \href{#method-ADMMSolver-print}{\code{ADMMSolver$print()}}
@@ -203,6 +206,29 @@ where \eqn{\delta} = \code{ridge}.  Because \eqn{A} is independent of
 reused for any regularisation grid.
 }
 
+\subsection{Returns}{
+\code{self} invisibly.
+}
+}
+\if{html}{\out{<hr>}}
+\if{html}{\out{<a id="method-ADMMSolver-reset_y"></a>}}
+\if{latex}{\out{\hypertarget{method-ADMMSolver-reset_y}{}}}
+\subsection{Method \code{reset_y()}}{
+Update the observed data matrix \code{Y} and recompute only the cheap data
+term \verb{.q_data = M_kron^T W y}, leaving the cached Cholesky intact.
+Used by \code{\link[=bootstrap_deconv_se]{bootstrap_deconv_se()}} to avoid re-factorising for each
+bootstrap replicate.
+\subsection{Usage}{
+\if{html}{\out{<div class="r">}}\preformatted{ADMMSolver$reset_y(Y_new)}\if{html}{\out{</div>}}
+}
+
+\subsection{Arguments}{
+\if{html}{\out{<div class="arguments">}}
+\describe{
+\item{\code{Y_new}}{n x S numeric matrix of new observed data.}
+}
+\if{html}{\out{</div>}}
+}
 \subsection{Returns}{
 \code{self} invisibly.
 }

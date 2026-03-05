@@ -167,6 +167,8 @@ ADMMSolver <- R6::R6Class(
     #' @field .q_data nT-vector \eqn{M^\top W y} (fixed data term in RHS).
     #'   Populated by `$setup()`.
     .q_data  = NULL,
+    #' @field .MtW Cached M_kron^T W (nT x nS). Populated by `$setup()`.
+    .MtW = NULL,
 
     # ===========================================================
     # initialize
@@ -267,6 +269,7 @@ ADMMSolver <- R6::R6Class(
       y_vec            <- as.numeric(t(self$Y))     # vec(Y^T), length nS
       y_vec[is.na(y_vec)] <- 0                      # NA obs excluded via W=0
       MtW           <- Matrix::crossprod(self$M_kron, self$W)  # (nT \u00D7 nS) * W
+      self$.MtW     <- MtW
       self$.q_data  <- as.numeric(MtW %*% y_vec)   # nT-vector
 
       # -- System matrix A_sys (assembled once, factorised once) -
@@ -281,6 +284,25 @@ ADMMSolver <- R6::R6Class(
       # -- Sparse Cholesky with AMD permutation (the expensive step) -
       self$.chol_A <- Matrix::Cholesky(self$A_sys, perm = TRUE, LDL = FALSE)
 
+      invisible(self)
+    },
+
+    # ===========================================================
+    # reset_y  -- update data term only (reuse Cholesky)
+    # ===========================================================
+    #' @description
+    #' Update the observed data matrix `Y` and recompute only the cheap data
+    #' term `.q_data = M_kron^T W y`, leaving the cached Cholesky intact.
+    #' Used by [bootstrap_deconv_se()] to avoid re-factorising for each
+    #' bootstrap replicate.
+    #'
+    #' @param Y_new  n x S numeric matrix of new observed data.
+    #' @return `self` invisibly.
+    reset_y = function(Y_new) {
+      self$Y <- Y_new
+      y_vec  <- as.numeric(t(Y_new))
+      y_vec[is.na(y_vec)] <- 0
+      self$.q_data <- as.numeric(self$.MtW %*% y_vec)
       invisible(self)
     },
 
@@ -603,4 +625,125 @@ solve_deconv <- function(Y, M, W = NULL, D, Ls,
              verbose    = verbose)
 
   if (return_solver) solver else solver$X_hat
+}
+
+
+# ================================================================
+# 3.  Parametric bootstrap SE / MOE:  bootstrap_deconv_se()
+# ================================================================
+
+#' Parametric Bootstrap Standard Errors for Deconvolution
+#'
+#' @description
+#' Estimates uncertainty in the recovered latent annual signal \eqn{\hat{X}}
+#' by perturbing the observed data matrix \eqn{Y} with its ACS sampling
+#' standard errors and re-solving the deconvolution \eqn{B} times.  The
+#' expensive sparse Cholesky factorisation of the system matrix is computed
+#' **once** and reused across all bootstrap replicates via [ADMMSolver]`$reset_y()`.
+#'
+#' @param Y          n x S numeric matrix of observed smoothed proportions /
+#'   counts.
+#' @param SE_Y       n x S numeric matrix of ACS standard errors for `Y`
+#'   (same dimension; `NA` entries are treated as zero perturbation).
+#' @param M          S x T convolution matrix.
+#' @param W          (nS) x (nS) sparse diagonal precision matrix from
+#'   [build_precision_weights()], or `NULL` for unweighted LS.
+#' @param D          (T-k) x T temporal difference matrix from
+#'   [build_temporal_penalty()].
+#' @param Ls         n x n spatial Laplacian from [build_spatial_laplacian()].
+#' @param lambda_t   Non-negative temporal regularisation strength.
+#' @param lambda_s   Non-negative spatial regularisation strength.
+#' @param rho        ADMM augmented-Lagrangian penalty parameter (default `1`).
+#' @param ridge      Ridge for system matrix PD guarantee (default `1e-8`).
+#' @param max_iter   Maximum ADMM iterations per replicate (default `1000`).
+#' @param tol_abs    Absolute convergence tolerance (default `1e-4`).
+#' @param tol_rel    Relative convergence tolerance (default `1e-3`).
+#' @param B          Number of bootstrap replicates (default `200`).
+#' @param conf_level Confidence level for MOE (default `0.90`).
+#' @param clip       Length-2 numeric vector `c(lo, hi)` to clip bootstrap
+#'   draws of `Y` before solving (e.g. `c(0, 1)` for proportions).  `NULL`
+#'   disables clipping (default).
+#' @param seed       Integer random seed passed to [set.seed()] for
+#'   reproducibility.  `NULL` uses the current RNG state (default).
+#' @param verbose    Logical; if `TRUE` prints replicate progress (default
+#'   `FALSE`).
+#'
+#' @return An object of class `"DeconvBootstrap"`, a list with elements:
+#' \describe{
+#'   \item{`X_hat`}{n x T point-estimate matrix (from the original `Y`).}
+#'   \item{`SE`}{n x T empirical bootstrap standard errors.}
+#'   \item{`MOE`}{n x T margins of error at the requested `conf_level`.}
+#'   \item{`CI_low`}{n x T lower confidence bound (`X_hat - MOE`).}
+#'   \item{`CI_high`}{n x T upper confidence bound (`X_hat + MOE`).}
+#'   \item{`B`}{Number of replicates used.}
+#'   \item{`conf_level`}{Confidence level.}
+#' }
+#'
+#' @seealso [solve_deconv()], [ADMMSolver], [build_precision_weights()]
+#' @export
+bootstrap_deconv_se <- function(
+  Y, SE_Y, M, W = NULL, D, Ls,
+  lambda_t, lambda_s,
+  rho        = 1.0,    ridge    = 1e-8,
+  max_iter   = 1000L,  tol_abs  = 1e-4,  tol_rel = 1e-3,
+  B          = 200L,   conf_level = 0.90,
+  clip       = NULL,   seed = NULL, verbose = FALSE
+) {
+  if (!is.null(seed)) set.seed(seed)
+  n <- nrow(Y); S <- ncol(Y)
+
+  # Handle NA SEs as zero perturbation
+  SE_Y_safe <- SE_Y
+  SE_Y_safe[is.na(SE_Y_safe)] <- 0
+
+  # Point estimate + cache Cholesky once
+  solver <- ADMMSolver$new(Y=Y, M=M, W=W, D=D, Ls=Ls,
+                            lambda_t=lambda_t, lambda_s=lambda_s,
+                            rho=rho, ridge=ridge)
+  solver$setup()
+  solver$run(max_iter=as.integer(max_iter), tol_abs=tol_abs, tol_rel=tol_rel)
+  X_hat <- solver$X_hat
+  T_lat <- ncol(X_hat)
+
+  if (verbose) message(sprintf("Bootstrap: B=%d (Cholesky reused)", B))
+
+  X_boot <- array(NA_real_, dim = c(n, T_lat, B))
+
+  for (b in seq_len(B)) {
+    if (verbose && (b == 1L || b %% 50L == 0L))
+      message(sprintf("  Replicate %d / %d ...", b, B))
+    Y_b <- Y + matrix(stats::rnorm(n * S), n, S) * SE_Y_safe
+    if (!is.null(clip)) Y_b <- pmax(pmin(Y_b, clip[2L]), clip[1L])
+    solver$reset_y(Y_b)
+    solver$run(max_iter=as.integer(max_iter), tol_abs=tol_abs, tol_rel=tol_rel,
+               warm_start=FALSE)
+    X_boot[,,b] <- solver$X_hat
+  }
+
+  z        <- stats::qnorm((1 + conf_level) / 2)
+  SE_boot  <- apply(X_boot, c(1L, 2L), stats::sd)
+  MOE_boot <- z * SE_boot
+  dimnames(SE_boot)  <- dimnames(X_hat)
+  dimnames(MOE_boot) <- dimnames(X_hat)
+
+  structure(
+    list(X_hat=X_hat, SE=SE_boot, MOE=MOE_boot,
+         CI_low=X_hat-MOE_boot, CI_high=X_hat+MOE_boot,
+         B=B, conf_level=conf_level),
+    class = "DeconvBootstrap"
+  )
+}
+
+#' Print method for DeconvBootstrap objects
+#'
+#' @param x A `DeconvBootstrap` object returned by [bootstrap_deconv_se()].
+#' @param ... Unused; accepted for generic compatibility.
+#' @export
+print.DeconvBootstrap <- function(x, ...) {
+  cat("DeconvBootstrap\n")
+  cat(sprintf("  Dimensions : %d cells x %d years\n", nrow(x$X_hat), ncol(x$X_hat)))
+  cat(sprintf("  Replicates : B = %d\n", x$B))
+  cat(sprintf("  Conf level : %.0f%%\n", x$conf_level * 100))
+  cat(sprintf("  Median MOE : %.4f\n",   stats::median(x$MOE, na.rm=TRUE)))
+  invisible(x)
 }

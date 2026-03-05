@@ -9,6 +9,7 @@ fetch_acs_vre_data(
   county = NULL,
   year_end,
   variables,
+  geography = "tract",
   geometry = TRUE,
   vre = TRUE,
   moe_level = 90,
@@ -23,7 +24,8 @@ fetch_acs_vre_data(
 abbreviation (\code{"IL"}), or 2-digit FIPS code (\code{"17"}).}
 
 \item{county}{Character or \code{NULL}. County name, partial name, or 3-digit
-FIPS code.  \code{NULL} (default) retrieves all tracts in the state.}
+FIPS code.  \code{NULL} (default) retrieves all units in the state.
+Ignored for \code{geography = "zcta"}.}
 
 \item{year_end}{Integer. End year of the ACS 5-year period
 (e.g., \code{2022} for ACS 2018-2022).  Must be >= 2013.}
@@ -32,11 +34,18 @@ FIPS code.  \code{NULL} (default) retrieves all tracts in the state.}
 e.g. \code{c(med_inc = "B19013_001", pop = "B01003_001")}.  Names become
 column prefixes in the output; defaults to the variable codes.}
 
-\item{geometry}{Logical. Attach Census tract polygons via TIGER/Line
+\item{geography}{Character. Geographic unit passed to
+\code{\link[tidycensus:get_acs]{tidycensus::get_acs()}}.  Common values: \code{"tract"} (default),
+\code{"block group"}, \code{"county"}, \code{"zcta"}.  VRE-based SDR standard errors
+are only available for \code{"tract"}; all other geographies fall back to
+MOE-derived SE.}
+
+\item{geometry}{Logical. Attach polygon geometries via TIGER/Line
 (default \code{TRUE}).  Set to \code{FALSE} if the geometry server is unavailable.}
 
 \item{vre}{Logical. Attempt to download VRE replicate tables and compute
-SDR standard errors (default \code{TRUE}).  Falls back to MOE on failure.}
+SDR standard errors (default \code{TRUE}).  Automatically disabled for
+geographies other than \code{"tract"}.  Falls back to MOE on failure.}
 
 \item{moe_level}{Numeric. ACS margin-of-error confidence level: \code{90}
 (default, ACS standard), \code{95}, or \code{99}.}
@@ -56,7 +65,7 @@ uses the key previously installed via \code{\link[tidycensus:census_api_key]{tid
 \value{
 A list of class \code{"ACSData"} with components:
 \describe{
-\item{\verb{$sf}}{\code{\link[sf:sf]{sf}} data frame with one row per tract:
+\item{\verb{$sf}}{\code{\link[sf:sf]{sf}} data frame with one row per geographic unit:
 \code{GEOID}, \code{NAME}, \verb{\{var\}E} (estimate), \verb{\{var\}M} (MOE),
 \verb{\{var\}_se} (standard error), and (when \code{vre = TRUE} and download
 succeeds) \verb{\{var\}_R1} ... \verb{\{var\}_R80} replicate columns.
@@ -69,12 +78,13 @@ Rows named by \code{GEOID}; columns named by \code{var_names}.}
 matrix of replicate estimates.  \code{NULL} entries indicate variables for
 which VRE data were unavailable.}
 \item{\verb{$metadata}}{Named list: \code{state}, \code{state_fips}, \code{county},
-\code{year_end}, \code{year_range}, \code{variables}, \code{var_names}, \code{n_tracts},
-\code{moe_level}, \code{vre_source} (\code{"sdr"} or \code{"moe"}), \code{call_time}.}
+\code{geography}, \code{year_end}, \code{year_range}, \code{variables}, \code{var_names},
+\code{n_units}, \code{moe_level}, \code{vre_source} (\code{"sdr"} or \code{"moe"}),
+\code{call_time}.}
 }
 }
 \description{
-Retrieves Census-tract-level ACS 5-year data via
+Retrieves ACS 5-year data for a user-specified geographic unit via
 \code{\link[tidycensus:get_acs]{tidycensus::get_acs()}}, augmented with Variance Replicate Estimate (VRE)
 tables from the Census Bureau file server.  The result is a structured
 list containing the point-estimate \code{\link[sf:sf]{sf}} object, standard error
@@ -102,42 +112,57 @@ the Census Bureau's VRE CSV files.}
 VRE tables are pre-computed replicate-based estimates published by the
 Census Bureau at
 \verb{https://www2.census.gov/programs-surveys/acs/replicate_estimates/}.
-They are available for B- and C-series tables from 2013 to the most
-recent 5-year release.  The function tries several URL patterns and
-caches downloaded zip files in \code{cache_dir} to avoid redundant downloads.
-If all download attempts fail (e.g., no internet, table not available)
-it silently falls back to MOE-derived SE and sets
-\code{metadata$vre_source = "moe"}.
+They are available for B- and C-series tables at the \strong{tract} level from
+2013 to the most recent 5-year release.  For all other geographies (block
+group, ZCTA, county, etc.) VRE is not published and the function
+automatically falls back to MOE-derived SE.  The function tries several
+URL patterns and caches downloaded zip files in \code{cache_dir} to avoid
+redundant downloads.
 }
 
 \subsection{Geometry}{
 
-Tract geometries are fetched via the Census TIGER/Line server through
+Geometries are fetched via the Census TIGER/Line server through
 \code{tidycensus}.  Set \code{geometry = FALSE} if the TIGER server is unavailable
 or the geometry is not needed.
+}
+
+\subsection{Geographic unit}{
+
+The \code{geography} argument is passed directly to \code{\link[tidycensus:get_acs]{tidycensus::get_acs()}}.
+Common values include \code{"tract"} (default), \code{"block group"}, \code{"county"},
+and \code{"zcta"}.  Note that \code{county} filtering is ignored by \code{tidycensus}
+for \code{"zcta"} — a warning is issued in that case.
 }
 }
 \examples{
 \dontrun{
-# Basic call -- Cook County, IL, ACS 2018-2022
+# Tract-level (default) -- Cook County, IL, ACS 2018-2022
 acs <- fetch_acs_vre_data(
   state     = "IL",
   county    = "Cook",
   year_end  = 2022,
-  variables = c(med_inc = "B19013_001",
-                pov_pct = "S1701_C03_001"),
+  variables = c(med_inc = "B19013_001"),
+  geography = "tract",
   cache_dir = "~/acs_cache"
 )
-print(acs)
 
-# Inspect the SE source
-acs$metadata$vre_source          # "sdr" or "moe"
+# Block-group level (VRE unavailable; falls back to MOE-derived SE)
+acs_bg <- fetch_acs_vre_data(
+  state     = "IL",
+  county    = "Cook",
+  year_end  = 2022,
+  variables = c(med_inc = "B19013_001"),
+  geography = "block group"
+)
 
-# Build the W matrix for deconvolution
-W <- build_precision_weights(acs$se)
-
-# Build the spatial Laplacian for deconvolution
-Ls <- build_spatial_laplacian(acs$sf)
+# ZCTA level (county filter is ignored)
+acs_zip <- fetch_acs_vre_data(
+  state     = "IL",
+  year_end  = 2022,
+  variables = c(med_inc = "B19013_001"),
+  geography = "zcta"
+)
 }
 
 }

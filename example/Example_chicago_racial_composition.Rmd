@@ -58,7 +58,12 @@ Cook County, IL contains ~1,300 Census tracts, a substantially larger
 problem than the St. Louis City income example.
 
 # Setup
+```{r}
+devtools::install_github("YungChun0303/TWDeConv")
+packageVersion("TWDeConv")
+body(TWDeConv:::build_empirical_laplacian)
 
+```
 ```{r packages}
 library(TWDeConv)
 library(ggplot2)
@@ -631,6 +636,153 @@ ggplot(map_resid_long) +
   theme_void() +
   theme(
     strip.text      = element_text(face = "bold", size = 9),
+    legend.position = "right",
+    plot.title      = element_text(face = "bold"),
+    plot.subtitle   = element_text(colour = "grey40", size = 9)
+  )
+```
+
+# Precision Comparison — TWDeConv vs. ACS 2018–2022
+
+We now quantify the uncertainty of the TWDeConv point estimates via a
+**parametric bootstrap** and compare those margins of error (MOE) against the
+conventional ACS 2018–2022 single-window MOE.
+
+The bootstrap perturbs the observed proportion matrix $Y$ by its ACS sampling
+SEs and re-solves the deconvolution $B$ times, reusing the Cholesky factorisation
+of the system matrix — so only the cheap data term $M^\top W y$ is updated per
+replicate.
+
+## Bootstrap SE
+
+```{r bootstrap, cache=TRUE, message=FALSE}
+boot <- bootstrap_deconv_se(
+  Y          = Y_prop,
+  SE_Y       = SE_prop,
+  M          = inp_black$M,
+  W          = W_prop,
+  D          = inp_black$D,
+  Ls         = inp_black$Ls,
+  lambda_t   = 1,
+  lambda_s   = 0.1,
+  rho        = 1.0,
+  max_iter   = 5000,
+  B          = 100L,
+  conf_level = 0.90,
+  clip       = c(0, 1),
+  seed       = 42L,
+  verbose    = TRUE
+)
+print(boot)
+```
+
+## ACS 2018–2022 MOE (single-window baseline)
+
+```{r acs-moe}
+N_22   <- acs_total_22$estimates[g22, "total"]
+p_22   <- acs_naive_df$prop_black_acs
+se_x22 <- acs_black_22$se[g22, "black_nh"]
+se_n22 <- acs_total_22$se[g22, "total"]
+
+disc22    <- se_x22^2 - p_22^2 * se_n22^2
+SE_acs22  <- ifelse(
+  !is.na(disc22) & disc22 >= 0,
+  sqrt(disc22) / N_22,
+  sqrt(se_x22^2 + p_22^2 * se_n22^2) / N_22
+)
+MOE_acs22 <- 1.645 * SE_acs22   # 90 % MOE to match boot$conf_level
+
+cat("ACS 2018-2022 MOE  — median:", round(median(MOE_acs22, na.rm=TRUE), 4),
+    "  mean:", round(mean(MOE_acs22, na.rm=TRUE), 4), "\n")
+```
+
+## MOE comparison summary
+
+```{r moe-comparison}
+moe_2020_col <- which(latent_years == 2020)
+moe_tw_2020  <- boot$MOE[, moe_2020_col]
+
+# Align tracts by GEOID
+moe_df <- data.frame(
+  GEOID   = rownames(boot$MOE),
+  moe_tw  = moe_tw_2020,
+  moe_acs = MOE_acs22[match(rownames(boot$MOE), g22)],
+  stringsAsFactors = FALSE
+)
+moe_df <- moe_df[!is.na(moe_df$moe_tw) & !is.na(moe_df$moe_acs), ]
+moe_df$ratio <- moe_df$moe_tw / moe_df$moe_acs
+
+pct_narrower <- mean(moe_df$ratio < 1, na.rm = TRUE) * 100
+
+summary_tbl <- data.frame(
+  Method              = c("TWDeConv 2020 (bootstrap)", "ACS 2018-2022 (single window)"),
+  `Median MOE`        = round(c(median(moe_df$moe_tw),  median(moe_df$moe_acs)),  4),
+  `Mean MOE`          = round(c(mean(moe_df$moe_tw),    mean(moe_df$moe_acs)),    4),
+  `Max MOE`           = round(c(max(moe_df$moe_tw),     max(moe_df$moe_acs)),     4),
+  check.names = FALSE
+)
+
+knitr::kable(summary_tbl,
+             caption = paste0("90% MOE comparison: TWDeConv 2020 vs. ACS 2018-2022  |  ",
+                              round(pct_narrower, 1), "% of tracts have narrower TWDeConv MOE"))
+```
+
+## Scatter: TWDeConv 2020 MOE vs. ACS 2018–2022 MOE {.tabset}
+
+```{r scatter-moe, fig.width=6, fig.height=5}
+# Colour points by decennial NH Black share to see if high-share tracts benefit more
+dec_share_vec <- dec_2020$prop_black_dec[match(moe_df$GEOID, dec_2020$GEOID)]
+
+ggplot(moe_df, aes(x = moe_acs, y = moe_tw, colour = dec_share_vec)) +
+  geom_point(alpha = 0.4, size = 1.2) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", linewidth = 0.8,
+              colour = "grey40") +
+  scale_colour_viridis_c(
+    option = "magma", direction = -1,
+    name   = "2020 Decennial\nNH Black share",
+    labels = scales::percent_format(accuracy = 1),
+    na.value = "grey70"
+  ) +
+  scale_x_continuous(labels = scales::percent_format(accuracy = 0.1)) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 0.1)) +
+  annotate("text", x = Inf, y = -Inf, hjust = 1.05, vjust = -0.5,
+           size = 3.2, colour = "grey30",
+           label = sprintf("%.1f%% of tracts: TWDeConv MOE < ACS MOE", pct_narrower)) +
+  labs(
+    title    = "TWDeConv 2020 MOE vs. ACS 2018-2022 MOE (90%)",
+    subtitle = "Points below the dashed line have narrower TWDeConv uncertainty",
+    x = "ACS 2018-2022 MOE (proportion units)",
+    y = "TWDeConv 2020 bootstrap MOE (proportion units)"
+  ) +
+  theme_bw() +
+  theme(legend.position = "right")
+```
+
+## Map: MOE ratio (TWDeConv / ACS)
+
+```{r map-moe-ratio, fig.width=8, fig.height=6}
+moe_ratio_sf <- moe_df |>
+  dplyr::left_join(tracts_sf, by = "GEOID") |>
+  sf::st_as_sf()
+
+# Symmetric colour limits centred at 1
+ratio_lim <- max(abs(moe_df$ratio - 1), na.rm = TRUE)
+
+ggplot(moe_ratio_sf) +
+  geom_sf(aes(fill = ratio), colour = NA) +
+  scale_fill_distiller(
+    palette  = "RdBu",
+    limits   = c(1 - ratio_lim, 1 + ratio_lim),
+    midpoint = 1,
+    name     = "MOE ratio\n(TW / ACS)",
+    na.value = "grey80"
+  ) +
+  labs(
+    title    = "MOE ratio: TWDeConv 2020 vs. ACS 2018-2022",
+    subtitle = "Blue (<1) = TWDeConv more precise; Red (>1) = ACS more precise  |  Cook County tracts"
+  ) +
+  theme_void() +
+  theme(
     legend.position = "right",
     plot.title      = element_text(face = "bold"),
     plot.subtitle   = element_text(colour = "grey40", size = 9)
