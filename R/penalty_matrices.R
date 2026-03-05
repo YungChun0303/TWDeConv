@@ -157,8 +157,19 @@ build_spatial_laplacian <- function(sf_obj, queen = TRUE) {
   if (!inherits(sf_obj, "sf"))
     stop("`sf_obj` must be an sf object.")
 
-  n  <- nrow(sf_obj)
-  nb <- spdep::poly2nb(sf_obj, queen = queen)
+  n <- nrow(sf_obj)
+
+  # Drop empty geometries before poly2nb (they cause a fatal error)
+  empty_mask <- sf::st_is_empty(sf_obj)
+  n_empty    <- sum(empty_mask)
+  if (n_empty > 0L)
+    warning(n_empty, " cell(s) with empty geometry removed before building ",
+            "the spatial graph. These cells receive zero spatial penalty.",
+            call. = FALSE)
+  valid_idx <- which(!empty_mask)
+  n_valid   <- length(valid_idx)
+
+  nb <- spdep::poly2nb(sf_obj[valid_idx, ], queen = queen)
 
   # Identify isolated cells
   n_isolated <- sum(vapply(nb, function(x) identical(x, 0L), logical(1)))
@@ -166,8 +177,19 @@ build_spatial_laplacian <- function(sf_obj, queen = TRUE) {
     warning(n_isolated, " isolated cell(s) with no neighbours detected.",
             call. = FALSE)
 
-  # Binary adjacency matrix (sparse)
-  A <- .nb_to_sparse_adj(nb, n)
+  # Build adjacency for valid subset, expand back to full n x n
+  A_small <- .nb_to_sparse_adj(nb, n_valid)
+  if (n_valid < n) {
+    tri <- Matrix::as(A_small, "TsparseMatrix")
+    A   <- Matrix::sparseMatrix(
+      i    = valid_idx[tri@i + 1L],
+      j    = valid_idx[tri@j + 1L],
+      x    = tri@x,
+      dims = c(n, n)
+    )
+  } else {
+    A <- A_small
+  }
 
   # Degree matrix (diagonal)
   deg <- Matrix::rowSums(A)
@@ -258,8 +280,19 @@ build_empirical_laplacian <- function(acs_sf_data, queen = TRUE) {
     stop("`acs_sf_data` must be an sf object ",
          "(e.g., the `$sf` field of an ACSData object).")
 
-  n  <- nrow(acs_sf_data)
-  nb <- spdep::poly2nb(acs_sf_data, queen = queen)
+  n <- nrow(acs_sf_data)
+
+  # Drop empty geometries before poly2nb (they cause a fatal error)
+  empty_mask <- sf::st_is_empty(acs_sf_data)
+  n_empty    <- sum(empty_mask)
+  if (n_empty > 0L)
+    warning(n_empty, " tract(s) with empty geometry removed before building ",
+            "the spatial graph. These tracts receive zero spatial penalty.",
+            call. = FALSE)
+  valid_idx <- which(!empty_mask)
+  n_valid   <- length(valid_idx)
+
+  nb <- spdep::poly2nb(acs_sf_data[valid_idx, ], queen = queen)
 
   # Identify and warn about island tracts
   n_islands <- sum(vapply(nb, function(x) identical(x, 0L), logical(1L)))
@@ -268,8 +301,19 @@ build_empirical_laplacian <- function(acs_sf_data, queen = TRUE) {
             "detected. These receive zero rows/columns in L_s and are ",
             "not spatially penalised.", call. = FALSE)
 
-  # Binary adjacency matrix (sparse)
-  A  <- .nb_to_sparse_adj(nb, n)
+  # Build adjacency for valid subset, expand back to full n x n
+  A_small <- .nb_to_sparse_adj(nb, n_valid)
+  if (n_valid < n) {
+    tri <- Matrix::as(A_small, "TsparseMatrix")
+    A   <- Matrix::sparseMatrix(
+      i    = valid_idx[tri@i + 1L],
+      j    = valid_idx[tri@j + 1L],
+      x    = tri@x,
+      dims = c(n, n)
+    )
+  } else {
+    A <- A_small
+  }
 
   # Degree matrix and Laplacian: L_s = D_s - A
   deg <- Matrix::rowSums(A)
