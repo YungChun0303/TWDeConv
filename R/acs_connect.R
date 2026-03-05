@@ -885,6 +885,25 @@ prep_acs_for_deconv <- function(state,
 
   # -- 7. Build Ls -----------------------------------------------
   sf_aligned <- acs_list[[1L]]$sf
+
+  # If geometry wasn't attached during ACS fetch (e.g. TIGER server was down),
+  # try tigris directly as a second independent attempt.
+  if (!inherits(sf_aligned, "sf")) {
+    if (!quiet)
+      message("  Geometry not in ACS result; trying tigris directly...")
+    state_fips_ls  <- acs_list[[1L]]$metadata$state_fips
+    geom_raw <- tryCatch(
+      .fetch_tigris_geometry(geography, state_fips_ls, county, year_ends[1L]),
+      error = function(e) {
+        if (!quiet)
+          message("  tigris also failed: ", conditionMessage(e))
+        NULL
+      }
+    )
+    if (!is.null(geom_raw) && inherits(geom_raw, "sf"))
+      sf_aligned <- geom_raw
+  }
+
   if (!inherits(sf_aligned, "sf"))
     stop("Geometry unavailable: re-run with geometry=TRUE (the default) ",
          "or ensure the Census TIGER server is reachable.")
