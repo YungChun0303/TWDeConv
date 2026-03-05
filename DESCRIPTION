@@ -30,6 +30,7 @@ Imports:
     tigris (>= 2.0),
     httr (>= 1.4-0),
     rlang (>= 1.0.0),
+    methods,
     stats
 Suggests:
     testthat (>= 3.0.0),

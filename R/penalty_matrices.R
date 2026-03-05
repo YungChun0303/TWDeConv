@@ -180,7 +180,7 @@ build_spatial_laplacian <- function(sf_obj, queen = TRUE) {
   # Build adjacency for valid subset, expand back to full n x n
   A_small <- .nb_to_sparse_adj(nb, n_valid)
   if (n_valid < n) {
-    tri <- Matrix::as(A_small, "TsparseMatrix")
+    tri <- methods::as(A_small, "TsparseMatrix")
     A   <- Matrix::sparseMatrix(
       i    = valid_idx[tri@i + 1L],
       j    = valid_idx[tri@j + 1L],
@@ -304,7 +304,7 @@ build_empirical_laplacian <- function(acs_sf_data, queen = TRUE) {
   # Build adjacency for valid subset, expand back to full n x n
   A_small <- .nb_to_sparse_adj(nb, n_valid)
   if (n_valid < n) {
-    tri <- Matrix::as(A_small, "TsparseMatrix")
+    tri <- methods::as(A_small, "TsparseMatrix")
     A   <- Matrix::sparseMatrix(
       i    = valid_idx[tri@i + 1L],
       j    = valid_idx[tri@j + 1L],
