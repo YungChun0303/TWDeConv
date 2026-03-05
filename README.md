@@ -43,7 +43,7 @@ The package is organized into specialized modules that handle everything from da
 These commands implement the project's requirement for "exact" margins of error and precision-weighted least squares.
 - `fetch_acs_vre_data()`: Pulls the 80 separate variance replicates from **Variance Replicate Estimate (VRE)** tables.
 - `compute_sdr_se()`: Uses **Successive Difference Replication (SDR)** to calculate official-standard standard errors that account for complex survey designs.
-- `build_acs_precision_weights()`: Constructs the diagonal precision matrix ($\textbf{W}$) used in the objective function to ensure higher-quality estimates have more influence.
+- `build_acs_precision_weights()`: Constructs the diagonal precision matrix (**$W$**) used in the objective function to ensure higher-quality estimates have more influence.
 - `prep_acs_for_deconv()`: A preprocessing tool that includes a **tigris fallback** to ensure spatial geometry is correctly assigned to the data even if metadata is missing.
 2. Matrix Construction and Penalties
 These functions build the operators required for the Kronecker-structured formulation.
