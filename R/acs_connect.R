@@ -605,17 +605,19 @@ fetch_acs_vre_data <- function(state,
   geom_sf <- NULL
   if (geometry) {
     # Attempt 1: tidycensus
+    # Note: quiet is intentionally omitted here — passing it causes
+    # "unused argument (quiet = FALSE)" in some tigris versions when
+    # tidycensus forwards it to load_tiger() internally.
     geom_sf <- tryCatch(
-      tidycensus::get_acs(
+      suppressMessages(tidycensus::get_acs(
         geography = geography,
         variables = named_vars[1L],
         state     = state_fips,
         county    = county_fips,
         year      = year_end,
         survey    = "acs5",
-        geometry  = TRUE,
-        quiet     = quiet
-      ),
+        geometry  = TRUE
+      )),
       error = function(e) {
         if (!quiet)
           message("  tidycensus geometry failed; trying tigris cache. ",
