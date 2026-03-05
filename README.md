@@ -12,18 +12,17 @@ It formalizes the conceptual three-phase approach from the sources into a unifie
 
 ## Core Model: The Spatio-Temporal Engine
 The package recovers the unobserved latent annual signal ($X$) by solving a single convex optimization problem. This objective function balances three primary goals:
-1. Data Fidelity: It ensures the recovered signal, when averaged over five years (via convolution matrix M), matches the observed ACS estimates, weighted by their precision ($W$).
+
+1. Data Fidelity: It ensures the recovered signal, when averaged over five years (via convolution matrix $\vec(M)$, matches the observed ACS estimates, weighted by their precision ($W$).
 2. Temporal Smoothness: It applies a k-th order trend-filtering penalty (D) to capture structured paths and identify sudden "level shifts" or changing trends.
 3. Spatial Continuity: It utilizes a spatial graph Laplacian ($L_s$) to penalize divergence between adjacent Census tracts, allowing the model to "borrow strength" across space.
-
 
 The model is solved using the Alternating Direction Method of Multipliers (ADMM), which is the industry standard for handling non-differentiable ($L_1$) penalties while maintaining computational efficiency for large-scale national data
 
 
 ## How it works
 
-The ACS 5-year estimate for tract *i* and window ending in year *s* is
-(approximately):
+The ACS 5-year estimate for tract *i* and window ending in year *s* is (approximately):
 
 $$Y_{is} = \frac{1}{5}\sum_{t=s-4}^{s} X_{it} + \varepsilon_{is}$$
 
