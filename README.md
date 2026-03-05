@@ -5,12 +5,21 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 <!-- badges: end -->
 
-**TWDeConv** is an R package for spatio-temporal deconvolution of multi-year
-moving-average estimates. Its primary application is recovering latent *annual*
-signals from published **ACS 5-year** estimates (which are 5-year moving
-averages over Census tracts), but the engine is general and works for any
-regularly or irregularly gridded spatial domain with overlapping temporal
-windows.
+**TWDeConv** is an R package for spatio-temporal deconvolution of multi-year moving-average estimates. 
+Its primary application is recovering latent *annual* signals from published **ACS 5-year** estimates (e.g., 5-year moving averages over Census tracts), 
+but the engine is general and works for any regularly or irregularly gridded spatial domain with overlapping temporal windows. 
+It formalizes the conceptual three-phase approach from the sources into a unified, Kronecker-structured generalized lasso engine
+
+## Core Model: The Spatio-Temporal Engine
+The package recovers the unobserved latent annual signal ($X$) by solving a single convex optimization problem. This objective function balances three primary goals:
+- Data Fidelity: It ensures the recovered signal, when averaged over five years (via convolution matrix M), matches the observed ACS estimates, weighted by their precision ($W$).
+- Temporal Smoothness: It applies a k-th order trend-filtering penalty (D) to capture structured paths and identify sudden "level shifts" or changing trends.
+- Spatial Continuity: It utilizes a spatial graph Laplacian ($L_s$) to penalize divergence between adjacent Census tracts, allowing the model to "borrow strength" across space.
+The model is solved using the Alternating Direction Method of Multipliers (ADMM), which is the industry standard for handling non-differentiable L 
+1
+​
+  penalties while maintaining computational efficiency for large-scale national data
+
 
 ## How it works
 
