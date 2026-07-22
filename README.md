@@ -156,7 +156,7 @@ If you use **TWDeConv** in published research, please cite:
 
 ```
 Chun, Y. and Mei, X. (2026). TWDeConv: Spatio-temporal deconvolution of moving-average
-estimates. R package version 0.1.0.
+estimates. R package version 0.2.0.
 https://github.com/YungChun0303/TWDeConv
 ```
 
