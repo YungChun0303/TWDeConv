@@ -281,3 +281,16 @@ test_that("end_year < start_year raises an error", {
 test_that("start_year < 2013 raises an error", {
   expect_error(build_acs_convolution_matrix(2012, 2015), "`start_year`")
 })
+
+# ---- build_spatial_incidence -----------------------------------
+
+test_that("incidence matrix has one signed row per edge and reproduces L_s", {
+  gen <- SyntheticDataGenerator$new(n_row = 3, n_col = 3, seed = 1L)
+  gen$simulate()
+  Es  <- build_spatial_incidence(gen$grid, queen = FALSE)
+  Ls  <- build_spatial_laplacian(gen$grid, queen = FALSE)
+  expect_equal(dim(Es), c(12L, 9L))           # 3x3 rook grid: 12 edges
+  expect_equal(as.numeric(Matrix::rowSums(Es)), rep(0, 12))
+  expect_equal(as.matrix(Matrix::crossprod(Es)), as.matrix(Ls),
+               ignore_attr = TRUE)
+})

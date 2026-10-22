@@ -23,13 +23,17 @@
 #' Build Kronecker products (pure sparse Matrix arithmetic)
 #' Returns a list with M_kron, Dt_kron, Ds_kron.
 #' @noRd
-.build_kron <- function(M_sp, D_sp, Ls_sp, n, T_yr) {
+.build_kron <- function(M_sp, D_sp, Ls_sp, n, T_yr, spatial = "level") {
   I_n <- Matrix::Diagonal(n)
   I_T <- Matrix::Diagonal(T_yr)
+  Ds_kron <- if (spatial == "change")
+    Matrix::kronecker(Ls_sp, .D1(T_yr))         # E(T-1) \u00D7 (nT): fuse changes
+  else
+    Matrix::kronecker(Ls_sp, I_T)               # (nT)  \u00D7 (nT): fuse levels
   list(
     M_kron  = Matrix::kronecker(I_n,   M_sp),   # (nS) \u00D7 (nT)
     Dt_kron = Matrix::kronecker(I_n,   D_sp),   # n(T-k) \u00D7 (nT)
-    Ds_kron = Matrix::kronecker(Ls_sp, I_T)     # (nT)  \u00D7 (nT)
+    Ds_kron = Ds_kron
   )
 }
 
@@ -133,6 +137,9 @@ ADMMSolver <- R6::R6Class(
     rho      = NULL,
     #' @field ridge Ridge added to system matrix diagonal for PD guarantee.
     ridge    = NULL,
+    #' @field spatial Spatial penalty type: `"level"` (L_s x I_T) or
+    #'   `"change"` (Delta_s x D_1).
+    spatial  = "level",
 
     # ---- dimensions -------------------------------------------
     #' @field n_cells Number of spatial cells (n).
@@ -194,7 +201,8 @@ ADMMSolver <- R6::R6Class(
                           lambda_t,
                           lambda_s,
                           rho   = 1.0,
-                          ridge = 1e-8) {
+                          ridge = 1e-8,
+                          spatial = c("level", "change")) {
 
       .sp <- function(x)
         if (inherits(x, "Matrix")) x else Matrix::Matrix(x, sparse = TRUE)
@@ -207,6 +215,7 @@ ADMMSolver <- R6::R6Class(
       self$lambda_s  <- lambda_s
       self$rho       <- rho
       self$ridge     <- ridge
+      self$spatial   <- match.arg(spatial)
       self$n_cells   <- nrow(Y)
       self$n_periods <- ncol(Y)
       self$T_years   <- ncol(M)
@@ -228,8 +237,11 @@ ADMMSolver <- R6::R6Class(
         stop("W must be a ", nS, " x ", nS, " matrix.")
       if (ncol(self$D) != self$T_years)
         stop("ncol(D) must equal ncol(M) (= ", self$T_years, ").")
-      if (!all(dim(self$Ls) == self$n_cells))
+      if (self$spatial == "level" && !all(dim(self$Ls) == self$n_cells))
         stop("Ls must be ", self$n_cells, " x ", self$n_cells, ".")
+      if (self$spatial == "change" && ncol(self$Ls) != self$n_cells)
+        stop("With spatial = \"change\", Ls must be an E x ", self$n_cells,
+             " incidence matrix (see build_spatial_incidence()).")
       if (lambda_t < 0 || lambda_s < 0)
         stop("lambda_t and lambda_s must be non-negative.")
       if (rho <= 0)
@@ -260,7 +272,7 @@ ADMMSolver <- R6::R6Class(
       nT <- n * T
 
       # -- Kronecker operators -----------------------------------
-      kron        <- .build_kron(self$M, self$D, self$Ls, n, T)
+      kron        <- .build_kron(self$M, self$D, self$Ls, n, T, self$spatial)
       self$M_kron  <- kron$M_kron
       self$Dt_kron <- kron$Dt_kron
       self$Ds_kron <- kron$Ds_kron
@@ -553,6 +565,11 @@ ADMMSolver <- R6::R6Class(
 #' @param tol_abs      Absolute convergence tolerance (default `1e-4`).
 #' @param tol_rel      Relative convergence tolerance (default `1e-3`).
 #' @param verbose      Logical.  Print convergence progress (default `FALSE`).
+#' @param spatial      Spatial penalty type. `"level"` (default) penalises
+#'   \eqn{\|(L_s \otimes I_T)x\|_1}, fusing neighbours' levels each year.
+#'   `"change"` penalises \eqn{\|(\Delta_s \otimes D_1)x\|_1}, fusing
+#'   neighbours' year-to-year changes while leaving level differences free;
+#'   `Ls` must then be the incidence matrix from [build_spatial_incidence()].
 #' @param return_solver Logical.  If `TRUE`, return the full [ADMMSolver]
 #'   object (which carries `$X_hat`, `$history`, `$A_sys`, etc.) instead
 #'   of just `$X_hat` (default `FALSE`).
@@ -612,11 +629,12 @@ solve_deconv <- function(Y, M, W = NULL, D, Ls,
                          tol_abs       = 1e-4,
                          tol_rel       = 1e-3,
                          verbose       = FALSE,
-                         return_solver = FALSE) {
+                         return_solver = FALSE,
+                         spatial       = c("level", "change")) {
   solver <- ADMMSolver$new(
     Y = Y, M = M, W = W, D = D, Ls = Ls,
     lambda_t = lambda_t, lambda_s = lambda_s,
-    rho = rho, ridge = ridge
+    rho = rho, ridge = ridge, spatial = match.arg(spatial)
   )
   solver$setup()
   solver$run(max_iter   = as.integer(max_iter),
@@ -663,6 +681,13 @@ solve_deconv <- function(Y, M, W = NULL, D, Ls,
 #' @param clip       Length-2 numeric vector `c(lo, hi)` to clip bootstrap
 #'   draws of `Y` before solving (e.g. `c(0, 1)` for proportions).  `NULL`
 #'   disables clipping (default).
+#' @param spatial    Spatial penalty type passed to [ADMMSolver]; see
+#'   [solve_deconv()].
+#' @param noise      `"independent"` (default) perturbs each period
+#'   independently. `"overlap"` draws annual noise \eqn{\eta} and sets
+#'   \eqn{e = \sqrt{L}\,SE \odot (M\eta)} (L = window length), so
+#'   perturbations of overlapping windows are correlated as their sampling
+#'   errors are (0.8 for adjacent 5-year ACS windows).
 #' @param seed       Integer random seed passed to [set.seed()] for
 #'   reproducibility.  `NULL` uses the current RNG state (default).
 #' @param verbose    Logical; if `TRUE` prints replicate progress (default
@@ -687,8 +712,12 @@ bootstrap_deconv_se <- function(
   rho        = 1.0,    ridge    = 1e-8,
   max_iter   = 1000L,  tol_abs  = 1e-4,  tol_rel = 1e-3,
   B          = 200L,   conf_level = 0.90,
-  clip       = NULL,   seed = NULL, verbose = FALSE
+  clip       = NULL,   seed = NULL, verbose = FALSE,
+  spatial    = c("level", "change"),
+  noise      = c("independent", "overlap")
 ) {
+  spatial <- match.arg(spatial)
+  noise   <- match.arg(noise)
   if (!is.null(seed)) set.seed(seed)
   n <- nrow(Y); S <- ncol(Y)
 
@@ -699,11 +728,13 @@ bootstrap_deconv_se <- function(
   # Point estimate + cache Cholesky once
   solver <- ADMMSolver$new(Y=Y, M=M, W=W, D=D, Ls=Ls,
                             lambda_t=lambda_t, lambda_s=lambda_s,
-                            rho=rho, ridge=ridge)
+                            rho=rho, ridge=ridge, spatial=spatial)
   solver$setup()
   solver$run(max_iter=as.integer(max_iter), tol_abs=tol_abs, tol_rel=tol_rel)
   X_hat <- solver$X_hat
   T_lat <- ncol(X_hat)
+  M_sp  <- solver$M
+  T_win <- max(Matrix::rowSums(M_sp != 0))   # window length (5 for ACS)
 
   if (verbose) message(sprintf("Bootstrap: B=%d (Cholesky reused)", B))
 
@@ -712,7 +743,15 @@ bootstrap_deconv_se <- function(
   for (b in seq_len(B)) {
     if (verbose && (b == 1L || b %% 50L == 0L))
       message(sprintf("  Replicate %d / %d ...", b, B))
-    Y_b <- Y + matrix(stats::rnorm(n * S), n, S) * SE_Y_safe
+    Y_b <- if (noise == "overlap") {
+      # Overlapping windows share sample years: draw annual noise and average
+      # it through M, rescaled so each window keeps variance SE^2 (adjacent
+      # 5-year windows then correlate at 0.8).
+      eta <- matrix(stats::rnorm(n * T_lat), n, T_lat)
+      Y + sqrt(T_win) * SE_Y_safe * as.matrix(eta %*% Matrix::t(M_sp))
+    } else {
+      Y + matrix(stats::rnorm(n * S), n, S) * SE_Y_safe
+    }
     if (!is.null(clip)) Y_b <- pmax(pmin(Y_b, clip[2L]), clip[1L])
     solver$reset_y(Y_b)
     solver$run(max_iter=as.integer(max_iter), tol_abs=tol_abs, tol_rel=tol_rel,

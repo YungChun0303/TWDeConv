@@ -97,6 +97,9 @@ Learning, 3(1), 1-122.
 
 \item{\code{ridge}}{Ridge added to system matrix diagonal for PD guarantee.}
 
+\item{\code{spatial}}{Spatial penalty type: \code{"level"} (L_s x I_T) or
+\code{"change"} (Delta_s x D_1).}
+
 \item{\code{n_cells}}{Number of spatial cells (n).}
 
 \item{\code{T_years}}{Number of latent annual time points (T).}
@@ -154,7 +157,8 @@ Create a new \code{ADMMSolver}.
   lambda_t,
   lambda_s,
   rho = 1,
-  ridge = 1e-08
+  ridge = 1e-08,
+  spatial = c("level", "change")
 )}\if{html}{\out{</div>}}
 }
 

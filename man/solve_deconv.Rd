@@ -18,7 +18,8 @@ solve_deconv(
   tol_abs = 1e-04,
   tol_rel = 0.001,
   verbose = FALSE,
-  return_solver = FALSE
+  return_solver = FALSE,
+  spatial = c("level", "change")
 )
 }
 \arguments{
@@ -62,6 +63,12 @@ diagonal to guarantee strict positive definiteness (default \code{1e-8}).}
 \item{return_solver}{Logical.  If \code{TRUE}, return the full \link{ADMMSolver}
 object (which carries \verb{$X_hat}, \verb{$history}, \verb{$A_sys}, etc.) instead
 of just \verb{$X_hat} (default \code{FALSE}).}
+
+\item{spatial}{Spatial penalty type. \code{"level"} (default) penalises
+\eqn{\|(L_s \otimes I_T)x\|_1}, fusing neighbours' levels each year.
+\code{"change"} penalises \eqn{\|(\Delta_s \otimes D_1)x\|_1}, fusing
+neighbours' year-to-year changes while leaving level differences free;
+\code{Ls} must then be the incidence matrix from \code{\link[=build_spatial_incidence]{build_spatial_incidence()}}.}
 }
 \value{
 \itemize{

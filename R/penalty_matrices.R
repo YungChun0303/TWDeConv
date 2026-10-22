@@ -210,6 +210,57 @@ build_spatial_laplacian <- function(sf_obj, queen = TRUE) {
 
 
 # ================================================================
+# 2b. Spatial incidence matrix (for the change-based spatial penalty)
+# ================================================================
+
+#' Build the Signed Incidence Matrix of the Spatial Contiguity Graph
+#'
+#' @description
+#' Returns the \eqn{E \times n} signed edge-incidence matrix \eqn{\Delta_s} of
+#' the contiguity graph used by [build_spatial_laplacian()]. Each undirected
+#' edge \eqn{(i, j)} with \eqn{i < j} is one row with \eqn{+1} in column
+#' \eqn{i} and \eqn{-1} in column \eqn{j}, so \eqn{\Delta_s^\top \Delta_s = L_s}.
+#'
+#' @details
+#' Used with `spatial = "change"` in [solve_deconv()], where the spatial
+#' penalty is \eqn{\lambda_s \|(\Delta_s \otimes D_1)x\|_1}: the year-to-year
+#' *changes* of adjacent cells are fused, while differences in *levels*
+#' between neighbours (e.g., across a segregation boundary) are left
+#' unpenalised. Isolated cells have no rows and are not penalised spatially.
+#'
+#' @inheritParams build_spatial_laplacian
+#' @return A sparse `dgCMatrix` of dimension \eqn{E \times n}. Column names
+#'   match those of [build_spatial_laplacian()]; row names are `"i-j"`.
+#' @seealso [build_spatial_laplacian()], [solve_deconv()]
+#' @examples
+#' \dontrun{
+#' gen <- SyntheticDataGenerator$new(n_row = 3, n_col = 3, seed = 1L)
+#' Es  <- build_spatial_incidence(gen$grid, queen = FALSE)
+#' dim(Es)                       # 12 x 9
+#' Matrix::crossprod(Es)         # equals build_spatial_laplacian(gen$grid, FALSE)
+#' }
+#' @export
+build_spatial_incidence <- function(sf_obj, queen = TRUE) {
+  Ls  <- build_spatial_laplacian(sf_obj, queen = queen)
+  n   <- nrow(Ls)
+  adj <- Matrix::triu(-methods::as(Ls, "generalMatrix"), k = 1L)
+  tri <- methods::as(adj, "TsparseMatrix")
+  keep <- tri@x > 0
+  ei <- tri@i[keep] + 1L
+  ej <- tri@j[keep] + 1L
+  E  <- length(ei)
+  Es <- Matrix::sparseMatrix(
+    i    = c(seq_len(E), seq_len(E)),
+    j    = c(ei, ej),
+    x    = c(rep(1, E), rep(-1, E)),
+    dims = c(E, n)
+  )
+  dimnames(Es) <- list(paste(ei, ej, sep = "-"), colnames(Ls))
+  Es
+}
+
+
+# ================================================================
 # 3.  Empirical Spatial Laplacian from ACS tract geometries
 # ================================================================
 

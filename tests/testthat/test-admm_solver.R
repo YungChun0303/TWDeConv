@@ -187,3 +187,50 @@ test_that("NULL weight matrix is accepted (unweighted LS)", {
                       lambda_t = 0.1, lambda_s = 0.05)
   expect_equal(dim(out), c(g$params$n_cells, g$params$T_years))
 })
+
+# ---- spatial = "change" -----------------------------------------
+
+test_that("spatial = 'change' equals 'level' when lambda_s = 0", {
+  # With lambda_s = 0 both solve the same convex problem; the L1 minimiser need
+  # not be unique, so compare optimal objective values rather than X.
+  p  <- make_problem()
+  Es <- build_spatial_incidence(p$gen$grid, queen = FALSE)
+  a  <- solve_deconv(p$gen$Y, p$gen$M, p$W, p$D, p$Ls, 0.1, 0,
+                     max_iter = 5000, tol_abs = 1e-7, tol_rel = 1e-6,
+                     return_solver = TRUE)
+  b  <- solve_deconv(p$gen$Y, p$gen$M, p$W, p$D, Es, 0.1, 0,
+                     max_iter = 5000, tol_abs = 1e-7, tol_rel = 1e-6,
+                     spatial = "change", return_solver = TRUE)
+  expect_equal(b$compute_objective()[["total"]], a$compute_objective()[["total"]],
+               tolerance = 1e-3)
+})
+
+test_that("change penalty ignores level offsets between neighbours", {
+  p  <- make_problem()
+  Es <- build_spatial_incidence(p$gen$grid, queen = FALSE)
+  s  <- ADMMSolver$new(p$gen$Y, p$gen$M, p$W, p$D, Es, 0, 1,
+                       spatial = "change")
+  s$setup()
+  n <- s$n_cells; T <- s$T_years
+  X <- outer(seq_len(n), rep(1, T)) + outer(rep(1, n), 0.1 * seq_len(T))
+  expect_equal(sum(abs(as.numeric(s$Ds_kron %*% as.numeric(t(X))))), 0,
+               tolerance = 1e-10)
+  expect_gt(sum(abs(as.numeric(kronecker(p$Ls, Matrix::Diagonal(T)) %*%
+                                 as.numeric(t(X))))), 0)
+})
+
+test_that("spatial = 'change' rejects a square Laplacian of wrong shape", {
+  p <- make_problem()
+  expect_error(ADMMSolver$new(p$gen$Y, p$gen$M, p$W, p$D,
+                              Matrix::Diagonal(3), 0.1, 0.1,
+                              spatial = "change"))
+})
+
+test_that("overlap bootstrap noise runs and returns positive SEs", {
+  p  <- make_problem()
+  Es <- build_spatial_incidence(p$gen$grid, queen = FALSE)
+  bs <- bootstrap_deconv_se(p$gen$Y, matrix(0.5, nrow(p$gen$Y), ncol(p$gen$Y)),
+                            p$gen$M, p$W, p$D, Es, 0.1, 0.05, B = 5L, seed = 1L,
+                            spatial = "change", noise = "overlap")
+  expect_true(all(bs$SE > 0))
+})

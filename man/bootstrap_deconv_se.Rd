@@ -22,7 +22,9 @@ bootstrap_deconv_se(
   conf_level = 0.9,
   clip = NULL,
   seed = NULL,
-  verbose = FALSE
+  verbose = FALSE,
+  spatial = c("level", "change"),
+  noise = c("independent", "overlap")
 )
 }
 \arguments{
@@ -69,6 +71,15 @@ reproducibility.  \code{NULL} uses the current RNG state (default).}
 
 \item{verbose}{Logical; if \code{TRUE} prints replicate progress (default
 \code{FALSE}).}
+
+\item{spatial}{Spatial penalty type passed to \link{ADMMSolver}; see
+\code{\link[=solve_deconv]{solve_deconv()}}.}
+
+\item{noise}{\code{"independent"} (default) perturbs each period
+independently. \code{"overlap"} draws annual noise \eqn{\eta} and sets
+\eqn{e = \sqrt{L}\,SE \odot (M\eta)} (L = window length), so
+perturbations of overlapping windows are correlated as their sampling
+errors are (0.8 for adjacent 5-year ACS windows).}
 }
 \value{
 An object of class \code{"DeconvBootstrap"}, a list with elements:
