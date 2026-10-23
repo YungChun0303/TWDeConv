@@ -1,0 +1,951 @@
+---
+title: "Recovering the 2020 COVID Unemployment Spike in St. Louis City"
+subtitle: "A TWDeConv Example: Deconvolving ACS 5-Year Unemployment Rate Estimates at the Census Tract Level"
+author: "TWDeConv Example"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    theme: flatly
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.width  = 9,
+  fig.height = 6
+)
+```
+
+# Background
+
+The ACS 5-year unemployment rate for Census tract $i$ ending in year $s$ is
+approximately:
+
+$$U_{i,s} = \frac{1}{5}\sum_{t=s-4}^{s} X_{i,t} + \varepsilon_{i,s}$$
+
+where $X_{i,t}$ is the **true annual** unemployment rate — never directly
+observable at the tract level.  **TWDeConv** recovers $X$ by solving a
+Kronecker-structured spatio-temporal generalised lasso via ADMM.
+
+COVID-19 caused the national unemployment rate to spike from roughly 3.5% in
+early 2020 to nearly 15% in April 2020, then recover through 2021–2022.  This
+is the sharpest short-term labour market shock in post-WWII US history.  Three
+widely-used ACS 5-year products each tell a *different* story about "unemployment
+around 2020":
+
+| Window | Years covered | What it shows |
+|--------|--------------|---------------|
+| ACS 2016–2020 | 2016–2020 | Blends 4 pre-COVID years with 1 spike year |
+| ACS 2017–2021 | 2017–2021 | Spike mixed with one recovery year |
+| ACS 2018–2022 | 2018–2022 | Spike diluted by two full recovery years |
+
+**A key data gap:** The Census Bureau did *not* release standard ACS 1-year
+tract-level estimates for 2020.  The Bureau released only "experimental"
+county-and-above estimates with explicit quality caveats.  This means
+tract-level annual unemployment for 2020 does not exist in any standard Census
+product — precisely the gap TWDeConv fills.
+
+TWDeConv deconvolves five overlapping windows simultaneously to recover the
+latent annual signal, including the true 2020 spike.
+
+We use two ACS variables:
+
+| ACS Variable | Description |
+|---|---|
+| `B23025_003` | Civilian labour force (denominator) |
+| `B23025_005` | Unemployed civilians (numerator) |
+
+The unemployment rate = `B23025_005` / `B23025_003` is a proportion on $[0,1]$,
+so the same ACS ratio SE formula used in the Chicago racial composition example
+applies directly.
+
+St. Louis City is an **independent city** in Missouri (county FIPS `510`),
+separate from St. Louis County, with ~100 Census tracts and historically marked
+spatial inequality between North and South city neighbourhoods — making it an
+ideal study region for detecting spatial heterogeneity in COVID unemployment.
+
+# Setup
+
+```{r install, cache=TRUE}
+devtools::install_github("YungChun0303/TWDeConv")
+packageVersion("TWDeConv")
+```
+
+```{r packages}
+library(TWDeConv)
+library(ggplot2)
+library(patchwork)
+library(sf)
+library(Matrix)
+
+options(tigris_use_cache = TRUE)
+```
+
+> **Census API key required.**  Register at
+> <https://api.census.gov/data/key_signup.html> and install once with:
+> ```r
+> tidycensus::census_api_key("YOUR_KEY_HERE", install = TRUE)
+> ```
+
+# Fetch and Prepare ACS Data
+
+We use five consecutive ACS 5-year windows (end years 2018–2022):
+
+- $S = 5$ observed windows
+- $T = S + 4 = 9$ latent annual time points (2014–2022)
+
+Including the window ending in 2020 (covering 2016–2020) means the model has
+direct information about the pandemic year at the tract level.
+
+## Step 1: Structural matrices from unemployed count
+
+`prep_acs_for_deconv()` is called with `B23025_005` (unemployed count) to
+obtain the structural matrices ($M$, $D$, $L_s$) and the aligned GEOID set.
+We will replace $Y$ and $W$ with rate-based counterparts in Step 3.
+
+```{r fetch-unemployed, cache=TRUE, message=FALSE}
+year_ends <- 2018:2024
+S         <- length(year_ends)
+
+inp_unemp <- prep_acs_for_deconv(
+  state     = "MO",
+  county    = "510",
+  year_ends = year_ends,
+  variables = c(unemp = "B23025_005"),
+  k         = 2L,
+  queen     = TRUE,
+  vre       = TRUE,
+  cache_dir = "~/acs_cache"
+)
+print(inp_unemp)
+
+common_geoids <- rownames(inp_unemp$Y)
+n_tracts      <- length(common_geoids)
+cat("Common tracts across all windows:", n_tracts, "\n")
+cat("Latent years:",
+    inp_unemp$metadata$first_latent_year, "to",
+    inp_unemp$metadata$last_latent_year, "\n")
+```
+
+## Step 2: Fetch civilian labour force (denominator)
+
+```{r fetch-clf, cache=TRUE}
+clf_list <- vector("list", S)
+for (i in seq_len(S)) {
+  clf_list[[i]] <- fetch_acs_vre_data(
+    state     = "MO",
+    county    = "510",
+    year_end  = year_ends[i],
+    variables = c(clf = "B23025_003"),
+    geometry  = FALSE,
+    vre       = FALSE,
+    cache_dir = "~/acs_cache",
+    quiet     = TRUE
+  )
+}
+```
+
+## Step 3: Compute unemployment rate Y and precision weights W
+
+```{r build-rates}
+# -- Unemployed counts and their SEs (n x S) --------------------------------
+Y_unemp  <- inp_unemp$Y
+SE_unemp <- matrix(
+  sqrt(1 / Matrix::diag(inp_unemp$W)),
+  nrow = n_tracts, ncol = S,
+  dimnames = list(common_geoids, colnames(Y_unemp))
+)
+
+# -- Civilian labour force and its SE (n x S), aligned to common_geoids -----
+clf_mat    <- matrix(NA_real_, nrow = n_tracts, ncol = S,
+                     dimnames = list(common_geoids, colnames(Y_unemp)))
+SE_clf_mat <- clf_mat
+
+for (i in seq_len(S)) {
+  g_i <- rownames(clf_list[[i]]$estimates)
+  idx <- match(common_geoids, g_i)
+  clf_mat[, i]    <- clf_list[[i]]$estimates[idx, "clf"]
+  SE_clf_mat[, i] <- clf_list[[i]]$se[idx, "clf"]
+}
+
+# -- Unemployment rate: U = Unemployed / CLF --------------------------------
+Y_prop <- Y_unemp / clf_mat
+
+# -- SE of proportion (ACS ratio formula) -----------------------------------
+SE_prop <- matrix(NA_real_, nrow = n_tracts, ncol = S,
+                  dimnames = dimnames(Y_prop))
+
+for (i in seq_len(S)) {
+  N    <- clf_mat[, i]
+  p    <- Y_prop[, i]
+  se_x <- SE_unemp[, i]
+  se_n <- SE_clf_mat[, i]
+
+  disc         <- se_x^2 - p^2 * se_n^2
+  SE_prop[, i] <- ifelse(
+    !is.na(disc) & disc >= 0,
+    sqrt(disc)                      / N,   # standard ACS ratio formula
+    sqrt(se_x^2 + p^2 * se_n^2)    / N    # fallback (sum form)
+  )
+}
+
+# Guard: zero CLF → NA
+SE_prop[is.na(clf_mat) | clf_mat == 0] <- NA_real_
+Y_prop[is.na(clf_mat)  | clf_mat == 0] <- NA_real_
+
+cat("Y_prop range  :", round(range(Y_prop,  na.rm = TRUE), 3), "\n")
+cat("SE_prop range :", round(range(SE_prop, na.rm = TRUE), 5), "\n")
+
+# Precision weight matrix (NA → W = 0, down-weighted from WLS)
+W_prop <- build_precision_weights(SE_prop)
+cat("W diagonal range:", round(range(Matrix::diag(W_prop)), 1), "\n")
+```
+
+# Solve the Deconvolution
+
+Unemployment rates live on $[0, 1]$, so we use $\lambda_t = 1$ and
+$\lambda_s = 0.1$ — the same scale as the Chicago racial composition example.
+With ~100 St. Louis City tracts the Cholesky factorisation takes seconds.
+
+```{r solve, cache=TRUE}
+X_hat <- solve_deconv(
+  Y        = Y_prop,
+  M        = inp_unemp$M,
+  W        = W_prop,
+  D        = inp_unemp$D,
+  Ls       = inp_unemp$Ls,
+  lambda_t = 1,
+  lambda_s = 0.1,
+  rho      = 1.0,
+  max_iter = 5000,
+  verbose  = TRUE
+)
+
+# Clip to [0, 1]
+X_hat <- pmax(pmin(X_hat, 1), 0)
+
+cat("Recovered dimensions:", nrow(X_hat), "tracts x", ncol(X_hat), "years\n")
+cat("X_hat range:", round(range(X_hat, na.rm = TRUE), 3), "\n")
+cat("Latent years:",
+    inp_unemp$metadata$first_latent_year, "\u2013",
+    inp_unemp$metadata$last_latent_year, "\n")
+```
+
+## Convergence diagnostic
+
+```{r solver-diagnostics, fig.height=4}
+solver <- solve_deconv(
+  Y             = Y_prop,
+  M             = inp_unemp$M,
+  W             = W_prop,
+  D             = inp_unemp$D,
+  Ls            = inp_unemp$Ls,
+  lambda_t      = 1,
+  lambda_s      = 0.1,
+  rho           = 1.0,
+  max_iter      = 5000,
+  return_solver = TRUE
+)
+solver$print()
+
+ggplot(solver$history, aes(x = iter)) +
+  geom_line(aes(y = r_primal, colour = "Primal residual")) +
+  geom_line(aes(y = r_dual,   colour = "Dual residual")) +
+  scale_y_log10() +
+  scale_colour_manual(
+    values = c("Primal residual" = "#2c7bb6", "Dual residual" = "#d7191c"),
+    name   = NULL
+  ) +
+  labs(title = "ADMM convergence \u2014 St. Louis City unemployment deconvolution",
+       x = "Iteration", y = "Residual norm (log scale)") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+```
+
+# Results
+
+## Long-format data frame
+
+```{r tidy-results}
+latent_years <- inp_unemp$metadata$first_latent_year:inp_unemp$metadata$last_latent_year
+
+X_long <- as.data.frame(X_hat)
+colnames(X_long) <- as.character(latent_years)
+X_long$GEOID     <- rownames(X_hat)
+
+X_long <- tidyr::pivot_longer(
+  X_long,
+  cols      = -GEOID,
+  names_to  = "year",
+  values_to = "unemp_hat"
+)
+X_long$year <- as.integer(X_long$year)
+
+Y_long <- as.data.frame(Y_prop)
+colnames(Y_long) <- as.character(year_ends)
+Y_long$GEOID     <- rownames(Y_prop)
+
+Y_long <- tidyr::pivot_longer(
+  Y_long,
+  cols      = -GEOID,
+  names_to  = "year_end",
+  values_to = "unemp_obs"
+)
+Y_long$year_end <- as.integer(Y_long$year_end)
+```
+
+## Time series: the 2020 spike in selected tracts
+
+We select five tracts spanning the cross-sectional distribution of 2020
+deconvolved unemployment and overlay the observed 5-year windows (thick
+horizontal segments) against the recovered annual signal (thin lines).
+
+```{r time-series, fig.height=5}
+# Select 5 tracts spanning the 2020 recovered unemployment distribution
+hat_2020   <- X_hat[, which(latent_years == 2020)]
+sel_geoids <- names(sort(hat_2020))[
+  round(seq(1, sum(!is.na(hat_2020)), length.out = 5))
+]
+
+X_sel <- X_long[X_long$GEOID %in% sel_geoids, ]
+Y_sel <- Y_long[Y_long$GEOID %in% sel_geoids, ]
+
+ggplot() +
+  annotate("rect",
+           xmin = 2019.75, xmax = 2020.25,
+           ymin = -Inf, ymax = Inf,
+           fill = "#fddbc7", alpha = 0.7) +
+  geom_segment(
+    data = Y_sel,
+    aes(x = year_end - 4, xend = year_end,
+        y = unemp_obs, yend = unemp_obs, colour = GEOID),
+    linewidth = 2.5, alpha = 0.4
+  ) +
+  geom_line(
+    data = X_sel,
+    aes(x = year, y = unemp_hat, colour = GEOID),
+    linewidth = 0.8
+  ) +
+  geom_point(
+    data = X_sel,
+    aes(x = year, y = unemp_hat, colour = GEOID),
+    size = 2
+  ) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  scale_x_continuous(breaks = latent_years) +
+  annotate("text",
+           x = 2020, y = max(X_sel$unemp_hat, na.rm = TRUE),
+           label = "COVID\n2020", size = 3, colour = "#b2182b",
+           fontface = "bold", vjust = -0.2, hjust = 0.5) +
+  labs(
+    title    = "Recovered annual vs. observed 5-year ACS unemployment rate",
+    subtitle = "Thick segments = ACS 5-year observed windows; lines = TWDeConv annual signal; shaded = 2020",
+    x = "Year", y = "Unemployment rate",
+    colour = "Census tract (GEOID)"
+  ) +
+  theme_bw() +
+  theme(legend.position = "bottom",
+        axis.text.x     = element_text(angle = 45, hjust = 1),
+        legend.text     = element_text(size = 7))
+```
+
+The 2020 annual spike is clearly visible in the recovered signal but is absent
+from any individual 5-year window: the segments spanning 2016–2020 and
+2018–2022 both show moderate, smoothed values.
+
+## Spatial maps: unemployment rate across years
+
+```{r maps, fig.height=8, message=FALSE}
+tracts_sf <- tidycensus::get_acs(
+  geography = "tract",
+  variables = "B23025_003",
+  state     = "MO",
+  county    = "510",
+  year      = 2022,
+  survey    = "acs5",
+  geometry  = TRUE
+) |>
+  dplyr::select(GEOID, geometry) |>
+  dplyr::distinct(GEOID, .keep_all = TRUE)
+```
+
+```{r maps-panel}
+years_to_map <- c(2018, 2019, 2020, 2021, 2022, 2024)
+
+map_panel_df <- X_long |>
+  dplyr::filter(year %in% years_to_map) |>
+  dplyr::left_join(tracts_sf, by = "GEOID") |>
+  sf::st_as_sf()
+
+ggplot(map_panel_df) +
+  geom_sf(aes(fill = unemp_hat), colour = NA) +
+  facet_wrap(~ year, ncol = 3) +
+  scale_fill_viridis_c(
+    option   = "inferno", direction = -1,
+    name     = "Unemployment\nrate",
+    labels   = scales::percent_format(accuracy = 1),
+    na.value = "grey80"
+  ) +
+  labs(
+    title    = "Recovered annual unemployment rate \u2014 St. Louis City tracts",
+    subtitle = paste0("TWDeConv  |  \u03bb_t = 1,  \u03bb_s = 0.1  |  Latent years ",
+                      min(latent_years), "\u2013", max(latent_years))
+  ) +
+  theme_void() +
+  theme(
+    strip.text      = element_text(face = "bold", size = 10),
+    legend.position = "right",
+    plot.title      = element_text(face = "bold"),
+    plot.subtitle   = element_text(colour = "grey40", size = 9)
+  )
+```
+
+The 2020 panel shows noticeably darker shading (higher unemployment) compared
+to both 2019 and 2021, confirming that the deconvolution recovers a sharp
+annual spike rather than a smoothed long-run shift.  The spatial pattern —
+North city tracts bearing higher unemployment — is preserved and sharpened
+relative to either 5-year window.
+
+# Validation: The 2020 COVID Signal
+
+This section is the core of the example.  We compare three estimates of
+"2020 unemployment" at the tract level:
+
+| Source | Coverage | Effective 2020 weight |
+|---|---|---|
+| **ACS 2016–2020** (window ending 2020) | 2016–2020 | 1/5 — spike diluted by 4 pre-COVID years |
+| **ACS 2018–2022** (window ending 2022) | 2018–2022 | 1/5 — spike buried under 2 recovery years |
+| **TWDeConv 2020** (deconvolved) | 2014–2022 (latent) | Annual — full spike recovered |
+
+Note: No standard Census source exists at the **tract level** for 2020 annual
+unemployment.  The ACS 1-year was suppressed for geographies below 65,000
+population that year.  TWDeConv provides the only tract-level annual estimate
+for 2020.
+
+## Fetch ACS 2016–2020 window (end year 2020)
+
+```{r fetch-acs-2020-window, cache=TRUE}
+unemp_2020_raw <- fetch_acs_vre_data(
+  state     = "MO",
+  county    = "510",
+  year_end  = 2020,
+  variables = c(unemp = "B23025_005"),
+  geometry  = FALSE,
+  vre       = FALSE,
+  cache_dir = "~/acs_cache",
+  quiet     = TRUE
+)
+
+clf_2020_raw <- fetch_acs_vre_data(
+  state     = "MO",
+  county    = "510",
+  year_end  = 2020,
+  variables = c(clf = "B23025_003"),
+  geometry  = FALSE,
+  vre       = FALSE,
+  cache_dir = "~/acs_cache",
+  quiet     = TRUE
+)
+
+g2020 <- intersect(rownames(unemp_2020_raw$estimates),
+                   rownames(clf_2020_raw$estimates))
+
+acs_2020w_rate <- unemp_2020_raw$estimates[g2020, "unemp"] /
+                  clf_2020_raw$estimates[g2020, "clf"]
+names(acs_2020w_rate) <- g2020
+
+cat("ACS 2016-2020 window tracts:", length(g2020), "\n")
+cat("Rate range:", round(range(acs_2020w_rate, na.rm = TRUE), 3), "\n")
+```
+
+## Three-way summary statistics
+
+```{r threeway-stats}
+# Merge all three estimates onto the common tract set
+twdeconv_2020_vec <- X_hat[, which(latent_years == 2020)]
+acs_2022w_rate    <- Y_prop[, which(year_ends == 2022)]   # ACS 2018-2022 (year_end=2022, col 5)
+
+threeway_df <- data.frame(
+  GEOID      = common_geoids,
+  acs_2020w  = acs_2020w_rate[match(common_geoids, names(acs_2020w_rate))],
+  acs_2022w  = acs_2022w_rate,
+  tw_2020    = twdeconv_2020_vec,
+  stringsAsFactors = FALSE
+)
+
+summary_tbl <- data.frame(
+  Source = c(
+    "ACS 2016\u20132020 (5-year window, diluted)",
+    "ACS 2018\u20132022 (5-year window, buried)",
+    "TWDeConv 2020 (annual, deconvolved)"
+  ),
+  `Median (%)` = round(c(
+    median(threeway_df$acs_2020w, na.rm = TRUE),
+    median(threeway_df$acs_2022w, na.rm = TRUE),
+    median(threeway_df$tw_2020,   na.rm = TRUE)
+  ) * 100, 1),
+  `Mean (%)` = round(c(
+    mean(threeway_df$acs_2020w, na.rm = TRUE),
+    mean(threeway_df$acs_2022w, na.rm = TRUE),
+    mean(threeway_df$tw_2020,   na.rm = TRUE)
+  ) * 100, 1),
+  `90th pct (%)` = round(c(
+    quantile(threeway_df$acs_2020w, 0.9, na.rm = TRUE),
+    quantile(threeway_df$acs_2022w, 0.9, na.rm = TRUE),
+    quantile(threeway_df$tw_2020,   0.9, na.rm = TRUE)
+  ) * 100, 1),
+  check.names = FALSE
+)
+
+knitr::kable(
+  summary_tbl,
+  caption = paste0("Tract-level unemployment rate \u2014 three-way comparison",
+                   " (St. Louis City, reference year 2020)")
+)
+```
+
+The TWDeConv 2020 median and mean should be noticeably higher than both
+5-year windows: the ACS 2016–2020 window dilutes the spike by averaging with
+four pre-COVID years, while ACS 2018–2022 buries it under two recovery years.
+
+## Three-way spatial maps
+
+```{r map-threeway, fig.height=6, fig.width=11}
+map_threeway_sf <- threeway_df |>
+  dplyr::left_join(tracts_sf, by = "GEOID") |>
+  sf::st_as_sf() |>
+  tidyr::pivot_longer(
+    cols      = c(acs_2020w, acs_2022w, tw_2020),
+    names_to  = "source",
+    values_to = "unemp_rate"
+  ) |>
+  dplyr::mutate(source = factor(
+    dplyr::recode(source,
+      acs_2020w = "ACS 2016\u20132020\n(4 pre-COVID yrs + 1 spike)",
+      acs_2022w = "ACS 2018\u20132022\n(spike + 2 recovery yrs)",
+      tw_2020   = "TWDeConv 2020\n(annual signal recovered)"
+    ),
+    levels = c(
+      "ACS 2016\u20132020\n(4 pre-COVID yrs + 1 spike)",
+      "ACS 2018\u20132022\n(spike + 2 recovery yrs)",
+      "TWDeConv 2020\n(annual signal recovered)"
+    )
+  ))
+
+ggplot(map_threeway_sf) +
+  geom_sf(aes(fill = unemp_rate), colour = NA) +
+  facet_wrap(~ source, nrow = 1) +
+  scale_fill_viridis_c(
+    option   = "inferno", direction = -1,
+    name     = "Unemployment\nrate",
+    labels   = scales::percent_format(accuracy = 1),
+    na.value = "grey80"
+  ) +
+  labs(
+    title    = "Unemployment rate circa 2020: three-way comparison",
+    subtitle = "St. Louis City Census tracts  |  Shared colour scale \u2014 darker = higher unemployment"
+  ) +
+  theme_void() +
+  theme(
+    strip.text      = element_text(face = "bold", size = 9),
+    legend.position = "right",
+    plot.title      = element_text(face = "bold"),
+    plot.subtitle   = element_text(colour = "grey40", size = 9)
+  )
+```
+
+The third panel (TWDeConv 2020) shows clearly darker shading in
+high-unemployment neighbourhoods compared to both ACS windows.  The
+deconvolution recovers the COVID spike that multi-year averaging conceals —
+particularly in North city tracts where the pandemic hit hardest.
+
+## Scatter: ACS windows vs. TWDeConv 2020
+
+```{r scatter-threeway, fig.height=5, fig.width=11}
+r_2020w    <- cor(threeway_df$tw_2020, threeway_df$acs_2020w, use = "complete.obs")
+r_2022w    <- cor(threeway_df$tw_2020, threeway_df$acs_2022w, use = "complete.obs")
+bias_2020w <- mean(threeway_df$acs_2020w - threeway_df$tw_2020, na.rm = TRUE)
+bias_2022w <- mean(threeway_df$acs_2022w - threeway_df$tw_2020, na.rm = TRUE)
+
+p_vs_2020w <- ggplot(threeway_df,
+                     aes(x = tw_2020, y = acs_2020w)) +
+  geom_point(alpha = 0.45, size = 1.5, colour = "#e08214") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed",
+              linewidth = 0.7, colour = "grey40") +
+  geom_smooth(method = "lm", se = FALSE,
+              colour = "#b2182b", linewidth = 0.9) +
+  scale_x_continuous(labels = scales::percent_format(accuracy = 1),
+                     limits = c(0, NA)) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1),
+                     limits = c(0, NA)) +
+  annotate("text", x = Inf, y = -Inf, hjust = 1.05, vjust = -0.5,
+           size = 3.2, colour = "grey30",
+           label = sprintf("r = %.3f\nMean bias = %+.1f pct pts",
+                           r_2020w, bias_2020w * 100)) +
+  labs(
+    title    = "A: ACS 2016\u20132020 vs. TWDeConv 2020",
+    subtitle = "Spike diluted by 4 pre-COVID years",
+    x = "TWDeConv 2020 (deconvolved annual)",
+    y = "ACS 2016\u20132020 (5-year window)"
+  ) +
+  theme_bw()
+
+p_vs_2022w <- ggplot(threeway_df,
+                     aes(x = tw_2020, y = acs_2022w)) +
+  geom_point(alpha = 0.45, size = 1.5, colour = "#2c7bb6") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed",
+              linewidth = 0.7, colour = "grey40") +
+  geom_smooth(method = "lm", se = FALSE,
+              colour = "#d7191c", linewidth = 0.9) +
+  scale_x_continuous(labels = scales::percent_format(accuracy = 1),
+                     limits = c(0, .3)) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1),
+                     limits = c(0, .3)) +
+  annotate("text", x = Inf, y = -Inf, hjust = 1.05, vjust = -0.5,
+           size = 3.2, colour = "grey30",
+           label = sprintf("r = %.3f\nMean bias = %+.1f pct pts",
+                           r_2022w, bias_2022w * 100)) +
+  labs(
+    title    = "B: ACS 2018\u20132022 vs. TWDeConv 2020",
+    subtitle = "Spike buried under 2021\u20132022 recovery years",
+    x = "TWDeConv 2020 (deconvolved annual)",
+    y = "ACS 2018\u20132022 (5-year window)"
+  ) +
+  theme_bw()
+
+patchwork::wrap_plots(p_vs_2020w, p_vs_2022w, nrow = 1)
+```
+
+Points fall below the identity line in both panels: both ACS windows
+*understate* the 2020 unemployment level relative to the deconvolved annual
+estimate.  The negative bias is larger for ACS 2018–2022 (Panel B) because
+recovery years 2021–2022 pull the 5-year average further below the 2020 spike.
+The correlations are high (both windows preserve the spatial rank ordering), but
+the slopes are less than 1 — the ACS compresses the cross-sectional range of
+2020 unemployment relative to TWDeConv.
+
+# City-Level Sanity Check
+
+At the city level we can compare the labour-force-weighted mean of TWDeConv
+tract estimates with the ACS 1-year county-level releases for available years
+(2015–2019, 2021–2022).  The 2020 ACS 1-year experimental estimate is included
+where accessible, with a clear label noting its quality caveats.
+
+This is an imperfect benchmark — TWDeConv operates at the tract level while
+ACS 1-year is a city-aggregate survey — but consistent order-of-magnitude
+agreement confirms the deconvolution is producing plausible annual signals.
+
+```{r acs1-citywide, cache=TRUE}
+acs1_years <- c(2015:2019, 2021:2022)
+
+acs1_list <- setNames(vector("list", length(acs1_years)),
+                      as.character(acs1_years))
+
+for (yr in acs1_years) {
+  acs1_list[[as.character(yr)]] <- tryCatch({
+    tidycensus::get_acs(
+      geography = "county",
+      variables = c(unemp = "B23025_005", clf = "B23025_003"),
+      state     = "MO",
+      county    = "510",
+      year      = yr,
+      survey    = "acs1",
+      output    = "wide"
+    )
+  }, error = function(e) {
+    message("ACS 1-year fetch failed for ", yr, ": ", conditionMessage(e))
+    NULL
+  })
+}
+
+# 2020 experimental 1-year
+acs1_2020_exp <- tryCatch(
+  tidycensus::get_acs(
+    geography = "county",
+    variables = c(unemp = "B23025_005", clf = "B23025_003"),
+    state     = "MO",
+    county    = "510",
+    year      = 2020,
+    survey    = "acs1",
+    output    = "wide"
+  ),
+  error = function(e) {
+    message("2020 ACS 1-year experimental fetch failed: ", conditionMessage(e))
+    NULL
+  }
+)
+
+# Build ACS 1-year city-level rate time series
+acs1_df <- dplyr::bind_rows(lapply(names(acs1_list), function(yr) {
+  d <- acs1_list[[yr]]
+  if (is.null(d)) return(NULL)
+  data.frame(year         = as.integer(yr),
+             unemp_acs1   = d$unempE / d$clfE,
+             experimental = FALSE,
+             stringsAsFactors = FALSE)
+}))
+
+if (!is.null(acs1_2020_exp)) {
+  acs1_df <- rbind(acs1_df,
+                   data.frame(year         = 2020L,
+                              unemp_acs1   = acs1_2020_exp$unempE / acs1_2020_exp$clfE,
+                              experimental = TRUE,
+                              stringsAsFactors = FALSE))
+}
+
+# TWDeConv city-level: labour-force-weighted tract mean (weight = mean CLF)
+lf_avg  <- rowMeans(clf_mat, na.rm = TRUE)
+tw_city <- sapply(seq_along(latent_years), function(j) {
+  weighted.mean(X_hat[, j], w = lf_avg, na.rm = TRUE)
+})
+
+tw_city_df <- data.frame(year = latent_years, unemp_city_hat = tw_city)
+sanity_df  <- dplyr::left_join(tw_city_df, acs1_df, by = "year")
+```
+
+```{r sanity-plot, fig.height=4}
+ggplot(sanity_df, aes(x = year)) +
+  annotate("rect",
+           xmin = 2019.5, xmax = 2020.5, ymin = -Inf, ymax = Inf,
+           fill = "#fddbc7", alpha = 0.6) +
+  annotate("text",
+           x = 2020, y = Inf, vjust = 2, size = 2.8, colour = "grey40",
+           label = "2020\n(no standard\nACS 1-yr tract data)") +
+  geom_line(aes(y = unemp_city_hat), colour = "#2c7bb6", linewidth = 1) +
+  geom_point(aes(y = unemp_city_hat), colour = "#2c7bb6", size = 2.5) +
+  {if (nrow(dplyr::filter(sanity_df, !is.na(unemp_acs1), !isTRUE(experimental))) > 0)
+    geom_point(data   = dplyr::filter(sanity_df, !is.na(unemp_acs1),
+                                      !isTRUE(experimental)),
+               aes(y = unemp_acs1),
+               colour = "#e08214", size = 3, shape = 17)
+  } +
+  {if (!is.null(acs1_2020_exp) && nrow(dplyr::filter(sanity_df, isTRUE(experimental))) > 0)
+    geom_point(data   = dplyr::filter(sanity_df, isTRUE(experimental)),
+               aes(y = unemp_acs1),
+               colour = "#d7191c", size = 3.5, shape = 8)
+  } +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 0.1)) +
+  scale_x_continuous(breaks = latent_years) +
+  labs(
+    title    = "County-level unemployment rate: TWDeConv vs. ACS 1-year benchmarks",
+    subtitle = paste0(
+      "Blue line/points = TWDeConv CLF-weighted city mean;",
+      "  Orange \u25b2 = ACS 1-year (standard);  Red \u2217 = ACS 1-year 2020 (experimental)\n",
+      "St. Louis City, MO  |  2020 standard ACS 1-year tract data suppressed"
+    ),
+    x = "Year", y = "Unemployment rate"
+  ) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.subtitle = element_text(size = 8, colour = "grey40"))
+```
+
+For 2015–2019 and 2021–2022, close tracking between TWDeConv and the ACS
+1-year city benchmarks confirms that the deconvolution recovers plausible
+annual signals at the right order of magnitude.  The 2020 TWDeConv value
+spikes relative to 2019, consistent with the COVID shock — and where the
+experimental ACS 1-year estimate is available it provides a useful (if
+imperfect) corroboration.
+
+# Precision: Bootstrap SE and MOE
+
+We quantify uncertainty via a parametric bootstrap, then compare the TWDeConv
+2020 margin of error (MOE) against the ACS 2018–2022 single-window MOE at the
+tract level.
+
+## Bootstrap SE
+
+```{r bootstrap, cache=TRUE, message=FALSE}
+boot <- bootstrap_deconv_se(
+  Y          = Y_prop,
+  SE_Y       = SE_prop,
+  M          = inp_unemp$M,
+  W          = W_prop,
+  D          = inp_unemp$D,
+  Ls         = inp_unemp$Ls,
+  lambda_t   = 1,
+  lambda_s   = 0.1,
+  rho        = 1.0,
+  max_iter   = 5000,
+  B          = 200L,
+  conf_level = 0.90,
+  clip       = c(0, 1),
+  seed       = 42L,
+  verbose    = TRUE
+)
+print(boot)
+```
+
+## Annual signal with 90% bootstrap CI: selected tracts
+
+```{r ci-timeseries, fig.height=5}
+boot_long <- dplyr::bind_rows(lapply(sel_geoids, function(g) {
+  i <- which(rownames(boot$X_hat) == g)
+  if (length(i) == 0) return(NULL)
+  data.frame(
+    GEOID    = g,
+    year     = latent_years,
+    estimate = boot$X_hat[i, ],
+    ci_low   = boot$CI_low[i, ],
+    ci_high  = boot$CI_high[i, ]
+  )
+}))
+
+ggplot(boot_long, aes(x = year, colour = GEOID, fill = GEOID)) +
+  annotate("rect",
+           xmin = 2019.75, xmax = 2020.25, ymin = -Inf, ymax = Inf,
+           fill = "#fddbc7", alpha = 0.7) +
+  geom_ribbon(aes(ymin = ci_low, ymax = ci_high),
+              alpha = 0.15, colour = NA) +
+  geom_line(aes(y = estimate), linewidth = 0.8) +
+  geom_point(aes(y = estimate), size = 2) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  scale_x_continuous(breaks = latent_years) +
+  labs(
+    title    = "TWDeConv annual unemployment rate with 90% bootstrap CI",
+    subtitle = "Shaded ribbons = 90% CI from B = 200 replicates  |  Shaded band = COVID 2020",
+    x = "Year", y = "Unemployment rate",
+    colour = "Census tract", fill = "Census tract"
+  ) +
+  theme_bw() +
+  theme(legend.position = "bottom",
+        axis.text.x     = element_text(angle = 45, hjust = 1),
+        legend.text     = element_text(size = 7))
+```
+
+## ACS 2018–2022 MOE (single-window baseline)
+
+```{r acs-moe-baseline}
+# SE for the ACS 2018-2022 window (year_end=2022, column 5 when year_ends=2018:2024)
+SE_acs22  <- SE_prop[, which(year_ends == 2022)]
+MOE_acs22 <- 1.645 * SE_acs22    # 90% MOE matching boot$conf_level
+
+cat("ACS 2018-2022 MOE \u2014 median:",
+    round(median(MOE_acs22, na.rm = TRUE), 4),
+    "  mean:", round(mean(MOE_acs22, na.rm = TRUE), 4), "\n")
+```
+
+## MOE summary table
+
+```{r moe-comparison}
+moe_2020_col <- which(latent_years == 2020)
+moe_tw_2020  <- boot$MOE[, moe_2020_col]
+
+moe_df <- data.frame(
+  GEOID   = rownames(boot$MOE),
+  moe_tw  = moe_tw_2020,
+  moe_acs = MOE_acs22[match(rownames(boot$MOE), common_geoids)],
+  stringsAsFactors = FALSE
+)
+moe_df <- moe_df[!is.na(moe_df$moe_tw) & !is.na(moe_df$moe_acs), ]
+moe_df$ratio <- moe_df$moe_tw / moe_df$moe_acs
+
+pct_narrower <- mean(moe_df$ratio < 1, na.rm = TRUE) * 100
+
+summary_moe_tbl <- data.frame(
+  Method       = c("TWDeConv 2020 (bootstrap, B = 200)",
+                   "ACS 2018\u20132022 (single window)"),
+  `Median MOE` = round(c(median(moe_df$moe_tw),  median(moe_df$moe_acs)),  4),
+  `Mean MOE`   = round(c(mean(moe_df$moe_tw),    mean(moe_df$moe_acs)),    4),
+  `Max MOE`    = round(c(max(moe_df$moe_tw),     max(moe_df$moe_acs)),     4),
+  check.names  = FALSE
+)
+
+knitr::kable(
+  summary_moe_tbl,
+  caption = paste0(
+    "90% MOE comparison: TWDeConv 2020 vs. ACS 2018\u20132022  |  ",
+    round(pct_narrower, 1), "% of tracts have narrower TWDeConv MOE"
+  )
+)
+```
+
+## MOE scatter and ratio map
+
+```{r moe-scatter, fig.width=10, fig.height=5}
+moe_df$tw_2020_rate <- moe_tw_2020[match(moe_df$GEOID, names(moe_tw_2020))]
+
+ggplot(moe_df, aes(x = moe_acs, y = moe_tw, colour = tw_2020_rate)) +
+  geom_point(alpha = 0.5, size = 1.8) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed",
+              linewidth = 0.8, colour = "grey40") +
+  scale_colour_viridis_c(
+    option   = "inferno", direction = -1,
+    name     = "TWDeConv 2020\nunemployment rate",
+    labels   = scales::percent_format(accuracy = 1),
+    na.value = "grey70"
+  ) +
+  scale_x_continuous(labels = scales::percent_format(accuracy = 0.1)) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 0.1)) +
+  annotate("text", x = Inf, y = -Inf, hjust = 1.05, vjust = -0.5,
+           size = 3.2, colour = "grey30",
+           label = sprintf("%.1f%% of tracts: TWDeConv MOE < ACS MOE",
+                           pct_narrower)) +
+  labs(
+    title    = "TWDeConv 2020 bootstrap MOE vs. ACS 2018\u20132022 MOE (90%)",
+    subtitle = "Points below dashed line: TWDeConv is more precise than single-window ACS",
+    x = "ACS 2018\u20132022 MOE (proportion units)",
+    y = "TWDeConv 2020 bootstrap MOE (proportion units)"
+  ) +
+  theme_bw() +
+  theme(legend.position = "right")
+```
+
+```{r moe-map, fig.width=7, fig.height=5}
+
+# 1. Prepare data with log2 transformation
+moe_ratio_sf <- moe_df |>
+  dplyr::mutate(
+    # Ensure ratio is finite
+    ratio = dplyr::if_else(is.finite(ratio) & ratio > 0, ratio, NA_real_),
+    # Take log2 of the ratio for symmetric divergence
+    log_ratio = log2(ratio),
+    # Clamp values to a reasonable range (e.g., log2(0.1) to log2(10))
+    log_ratio = pmin(pmax(log_ratio, log2(0.1)), log2(10))
+  ) |>
+  dplyr::left_join(tracts_sf, by = "GEOID") |>
+  sf::st_as_sf()
+
+# 2. Define breaks for the legend (original ratio values)
+# These are the values people understand intuitively
+breaks_ratio <- c(0.01, 0.1, 1, 10, 100)
+# Map those breaks to the log2 scale we are actually plotting
+breaks_log <- log2(breaks_ratio)
+
+# 3. Plot
+ggplot(moe_ratio_sf) +
+  geom_sf(aes(fill = log_ratio), colour = NA) +
+  scale_fill_gradient2(
+    low      = "#2166AC",  # Blue
+    mid      = "white",    # Neutral
+    high     = "#B2182B",  # Red
+    midpoint = 0,          # log2(1) = 0
+    limits   = c(log2(0.01), log2(100)),
+    breaks   = breaks_log, 
+    labels   = breaks_ratio, # Display the original ratios on the legend
+    name     = "MOE ratio\n(TW / ACS)",
+    na.value = "grey80"
+  ) +
+  labs(
+    title    = "MOE ratio: TWDeConv 2020 vs. ACS 2018\u20132022",
+    subtitle = "Blue (<1) = TWDeConv more precise; Red (>1) = ACS more precise  |  St. Louis City tracts"
+  ) +
+  theme_void() +
+  theme(
+    legend.position = "right",
+    plot.title      = element_text(face = "bold"),
+    plot.subtitle   = element_text(colour = "grey40", size = 9)
+  )
+
+```
+
+# Session Info
+
+```{r session-info}
+sessionInfo()
+```

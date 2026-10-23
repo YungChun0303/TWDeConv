@@ -61,8 +61,6 @@ problem than the St. Louis City income example.
 ```{r}
 devtools::install_github("YungChun0303/TWDeConv")
 packageVersion("TWDeConv")
-body(TWDeConv:::build_empirical_laplacian)
-
 ```
 ```{r packages}
 library(TWDeConv)
@@ -761,25 +759,42 @@ ggplot(moe_df, aes(x = moe_acs, y = moe_tw, colour = dec_share_vec)) +
 ## Map: MOE ratio (TWDeConv / ACS)
 
 ```{r map-moe-ratio, fig.width=8, fig.height=6}
+# 1. Prepare data with log2 transformation
 moe_ratio_sf <- moe_df |>
+  dplyr::mutate(
+    # Ensure ratio is finite
+    ratio = dplyr::if_else(is.finite(ratio) & ratio > 0, ratio, NA_real_),
+    # Take log2 of the ratio for symmetric divergence
+    log_ratio = log2(ratio),
+    # Clamp values to a reasonable range (e.g., log2(0.1) to log2(10))
+    log_ratio = pmin(pmax(log_ratio, log2(0.1)), log2(10))
+  ) |>
   dplyr::left_join(tracts_sf, by = "GEOID") |>
   sf::st_as_sf()
 
-# Symmetric colour limits centred at 1
-ratio_lim <- max(abs(moe_df$ratio - 1), na.rm = TRUE)
+# 2. Define breaks for the legend (original ratio values)
+# These are the values people understand intuitively
+breaks_ratio <- c(0.01, 0.1, 1, 10, 100)
+# Map those breaks to the log2 scale we are actually plotting
+breaks_log <- log2(breaks_ratio)
 
+# 3. Plot
 ggplot(moe_ratio_sf) +
-  geom_sf(aes(fill = ratio), colour = NA) +
-  scale_fill_distiller(
-    palette  = "RdBu",
-    limits   = c(1 - ratio_lim, 1 + ratio_lim),
-    midpoint = 1,
+  geom_sf(aes(fill = log_ratio), colour = NA) +
+  scale_fill_gradient2(
+    low      = "#2166AC",  # Blue
+    mid      = "white",    # Neutral
+    high     = "#B2182B",  # Red
+    midpoint = 0,          # log2(1) = 0
+    limits   = c(log2(0.01), log2(100)),
+    breaks   = breaks_log, 
+    labels   = breaks_ratio, # Display the original ratios on the legend
     name     = "MOE ratio\n(TW / ACS)",
     na.value = "grey80"
   ) +
   labs(
-    title    = "MOE ratio: TWDeConv 2020 vs. ACS 2018-2022",
-    subtitle = "Blue (<1) = TWDeConv more precise; Red (>1) = ACS more precise  |  Cook County tracts"
+    title    = "MOE ratio (Log Scale): TWDeConv 2020 vs. ACS 2018-2022",
+    subtitle = "Blue (<1) = TWDeConv more precise; Red (>1) = ACS more precise | Cook County"
   ) +
   theme_void() +
   theme(
